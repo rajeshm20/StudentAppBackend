@@ -20,11 +20,11 @@ volumes:
 
 x-shared_environment: &shared_environment
   LOG_LEVEL: ${LOG_LEVEL:-debug}
-  DATABASE_HOST: db
-  DATABASE_NAME: vapor_database
-  DATABASE_USERNAME: vapor_username
-  DATABASE_PASSWORD: vapor_password
-  
+  DB_HOST: db
+  DB_NAME: student_db
+  DB_USER: ${DATABASE_USERNAME:-root}
+  DB_PASSWORD: ${DATABASE_PASSWORD:-password}
+
 services:
   app:
     image: studentappbackend:latest
@@ -45,7 +45,8 @@ services:
     environment:
       <<: *shared_environment
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     command: ["migrate", "--yes"]
     deploy:
       replicas: 0
@@ -62,12 +63,21 @@ services:
       replicas: 0
   db:
     image: mysql:8
+    restart: always
     volumes:
       - db_data:/var/lib/mysql
     environment:
-      MYSQL_USER: vapor_username
-      MYSQL_PASSWORD: vapor_password
-      MYSQL_DATABASE: vapor_database
-      MYSQL_RANDOM_ROOT_PASSWORD: 'yes'
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: student_db
+      # MYSQL_USER: vapor_user
+      # MYSQL_PASSWORD: StrongPassword123
+      # MYSQL_DATABASE: student_db
+      # MYSQL_ROOT_PASSWORD: "password"
     ports:
       - '3306:3306'
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+

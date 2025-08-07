@@ -4,6 +4,7 @@ import Fluent
 import FluentMySQLDriver
 import JWTKit
 import JWT
+import Logging
 
 public func configure(_ app: Application) throws {
     if app.environment == .testing {
@@ -25,7 +26,7 @@ public func configure(_ app: Application) throws {
             hostname: Environment.get("DB_HOST") ?? "localhost",
             port: Environment.get("DB_PORT").flatMap(Int.init(_:)) ?? MySQLConfiguration.ianaPortNumber,
             username: Environment.get("DB_USER") ?? "root",
-            password: Environment.get("DB_PASSWORD") ?? "",
+            password: Environment.get("DB_PASSWORD") ?? "password",
             database: Environment.get("DB_NAME") ?? "student_db",
             tlsConfiguration: .forClient(certificateVerification: .none)
         ), as: .mysql)
