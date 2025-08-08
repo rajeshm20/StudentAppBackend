@@ -1,6 +1,6 @@
 # StudentAppBackend
 
-💧 A project built with the Vapor web framework.
+💧 A project built with the Vapor swift server framework.
 
 ## Getting Started
 
