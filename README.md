@@ -1,32 +1,5 @@
 # StudentAppBackend
 
-After
-```bash
-docker pull ghcr.io/rajeshm20/studentappbackend:latest
-```
-pulling the docker image and successfully running that includes StudentAppBackend app and mysql, try below endpoints using curl
-
-Signup
-```bash
- curl -X POST http://localhost:8080/auth/signup \                     
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Student Name",
-    "email": "student@example.com",
-    "password": "password123"
-  }'
-```
-
-Login
-```bash
-curl -X POST http://localhost:8080/auth/login \                     
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "student@example.com",
-    "password": "password123"
-  }'
-```
-
 💧 A project built with the Vapor web framework.
 
 ## Getting Started
@@ -53,6 +26,33 @@ swift test
 - [Vapor GitHub](https://github.com/vapor)
 - [Vapor Community](https://github.com/vapor-community)
 
+
+After
+```bash
+docker pull ghcr.io/rajeshm20/studentappbackend:latest
+```
+pulling the docker image and successfully running that includes StudentAppBackend app and mysql, try below endpoints using curl
+
+Signup
+```bash
+ curl -X POST http://localhost:8080/auth/signup \                     
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Student Name",
+    "email": "student@example.com",
+    "password": "password123"
+  }'
+```
+
+Login
+```bash
+curl -X POST http://localhost:8080/auth/login \                     
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "student@example.com",
+    "password": "password123"
+  }'
+```
 
 
 ## Installing and configuring MySQL on a Mac using Homebrew is a straightforward process. Here's a step-by-step guide:
