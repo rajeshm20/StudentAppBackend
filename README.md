@@ -1,5 +1,28 @@
 # StudentAppBackend
 
+After installing docker image and successfully running StudentAppBackend app and mysql, try below endpoints using curl
+
+Signup
+```bash
+ curl -X POST http://localhost:8080/auth/signup \                     
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Student Name",
+    "email": "student@example.com",
+    "password": "password123"
+  }'
+```
+
+Login
+```bash
+curl -X POST http://localhost:8080/auth/login \                     
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "student@example.com",
+    "password": "password123"
+  }'
+```
+
 💧 A project built with the Vapor web framework.
 
 ## Getting Started
