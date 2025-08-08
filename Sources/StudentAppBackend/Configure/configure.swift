@@ -13,7 +13,7 @@ public func configure(_ app: Application) throws {
             username: "root",
             password: "",
             database: "student_app_test_db",
-            tlsConfiguration: .forClient(certificateVerification: .none)
+            tlsConfiguration: .makeClientConfiguration()
         ), as: .mysql)
         // JWT setup
         app.jwt.signers.use(.hs256(key: "your-secret-key".data(using: .utf8)!))
@@ -28,7 +28,7 @@ public func configure(_ app: Application) throws {
             username: Environment.get("DB_USER") ?? "root",
             password: Environment.get("DB_PASSWORD") ?? "password",
             database: Environment.get("DB_NAME") ?? "student_db",
-            tlsConfiguration: .forClient(certificateVerification: .none)
+            tlsConfiguration: .makeClientConfiguration()
         ), as: .mysql)
         // JWT setup
         app.jwt.signers.use(.hs256(key: "your-secret-key".data(using: .utf8)!))
