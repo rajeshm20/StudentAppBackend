@@ -1,6 +1,10 @@
 # StudentAppBackend
 
-After installing docker image and successfully running that includes StudentAppBackend app and mysql, try below endpoints using curl
+After
+```bash
+docker pull ghcr.io/rajeshm20/studentappbackend:latest
+```
+pulling the docker image and successfully running that includes StudentAppBackend app and mysql, try below endpoints using curl
 
 Signup
 ```bash
