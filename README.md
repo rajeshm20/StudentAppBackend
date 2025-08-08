@@ -1,6 +1,6 @@
 # StudentAppBackend
 
-After installing docker image and successfully running StudentAppBackend app and mysql, try below endpoints using curl
+After installing docker image and successfully running that includes StudentAppBackend app and mysql, try below endpoints using curl
 
 Signup
 ```bash
