@@ -62,7 +62,7 @@ Login
 ```bash
 curl https://localhost:8080/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"rajesh@example.com","password":"password123"}'
+  -d '{"email":"sasvathrn@rnss.com","password":"password123"}'
 ```
 
 
