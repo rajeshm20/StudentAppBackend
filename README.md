@@ -35,23 +35,15 @@ pulling the docker image and successfully running that includes StudentAppBacken
 
 Signup
 ```bash
- curl -X POST http://localhost:8080/auth/signup \
+ curl https://localhost:8080/auth/signup \
   -H "Content-Type: application/json" \
-  -d '{
-    "name": "Student Name",
-    "email": "student@example.com",
-    "password": "password123"
-  }'
+  -d '{"name":"SasvathRN", "email": "sasvathrn@rnss.com", "password":"password123"}'
 ```
-
 Login
 ```bash
-curl -X POST http://localhost:8080/auth/login \
+curl https://localhost:8080/auth/login \
   -H "Content-Type: application/json" \
-  -d '{
-    "email": "student@example.com",
-    "password": "password123"
-  }'
+  -d '{"email":"rajesh@example.com","password":"password123"}'
 ```
 
 
