@@ -20,10 +20,10 @@ volumes:
 
 x-shared_environment: &shared_environment
   LOG_LEVEL: ${LOG_LEVEL:-debug}
-  DB_HOST: db
+  DB_HOST: localhost
   DB_NAME: student_db
   DB_USER: ${DATABASE_USERNAME:-root}
-  DB_PASSWORD: ${DATABASE_PASSWORD:-password}
+  DB_PASSWORD: ${DATABASE_PASSWORD:-newpassword}
 
 services:
   app:

@@ -116,8 +116,24 @@ Once MySQL is installed and configured, you can connect to it from your terminal
 Connect to the MySQL server: Use the following command and enter the root password you set during the security configuration.
 
 ```bash
-mysql -u root -p
+ mysql -u root -p -h 127.0.0.1 -P 3306
 ```
 The -u flag specifies the user (root), and the -p flag prompts for the password.
 
 Verify the connection: If successful, you'll see the MySQL prompt, where you can start executing SQL commands. To exit, type exit; and press Enter.
+
+To Enable https
+You need to re-generate the cert with CN=localhost:
+
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout key.pem -out cert.pem -days 365 \
+  -subj "/CN=localhost"
+  
+  Then rebuild the .p12:
+  
+  openssl pkcs12 -export -out localhost.p12 \
+  -inkey key.pem -in cert.pem \
+  -name "Vapor Localhost Cert"
+  
+  
+  

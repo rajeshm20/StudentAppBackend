@@ -37,10 +37,9 @@ struct AuthController: RouteCollection {
     func login(req: Request) async throws -> LoginResponse {
         let credentials = try req.content.decode(Student.LoginRequest.self)
         guard let student = try await StudentService.shared.authenticate(credentials: credentials, on: req.db) else {
-            throw Abort(.unauthorized, reason: "Invalid email or password")
+            throw LoginError(status: .unauthorized, message: Abort(.unauthorized, reason: "Invalid email or password").localizedDescription)
         }
-//        return HTTPStatus.ok
-        let expiration = ExpirationClaim(value: .init(timeIntervalSinceNow: 3600)) // 1 hour
+        let expiration = ExpirationClaim(value: .init(timeIntervalSinceNow: 60)) // 1 hour
         let payload = StudentToken(exp: expiration, studentID: try student.requireID())
         let token = try req.jwt.sign(payload)
         return LoginResponse.init(user: student.convertToPublic(), token: TokenResponse(token: token), status: .ok)
@@ -54,4 +53,8 @@ struct LoginResponse: Content {
     let user: Student.Public
     let token: TokenResponse
     let status: HTTPStatus
+}
+struct LoginError: Error, Codable, Content {
+    let status: HTTPStatus
+    let message: String
 }
