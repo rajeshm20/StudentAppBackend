@@ -32,7 +32,26 @@ After
 docker pull ghcr.io/rajeshm20/studentappbackend:latest
 ```
 pulling the docker image and successfully running that includes StudentAppBackend app and mysql, try below endpoints using curl
+with http
 
+SignUp
+```
+curl -k -X POST  https://localhost:8080/auth/signup \
+  -H "Content-Type: application/json" \
+  -d '{"name":"SasvathRN", "email": "sasvathrn@rnss.com", "password":"password123"}'
+```
+
+Login
+```
+curl -k -X POST https://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "rajesh@example.com",
+    "password": "password123"
+  }'
+```
+
+with https
 Signup
 ```bash
  curl https://localhost:8080/auth/signup \
