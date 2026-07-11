@@ -155,6 +155,7 @@ public func configure(_ app: Application) throws {
             try routes(app)
             } catch {
                 print("Certificate error:", error)
+                app.logger.critical("Startup failed: \(error)")
             }
 
         }

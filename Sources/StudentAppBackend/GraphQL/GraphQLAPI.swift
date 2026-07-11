@@ -79,6 +79,23 @@ struct GraphQLResolver {
             return AuthPayload(user: student.convertToPublic(), token: token)
         }
     }
+    struct UpdateArguments: Codable {
+        let input: StudentGraphQLUpdateInput
+    }
+
+    func updateStudent(context: Request, arguments: UpdateArguments) async throws -> Student.Public {
+        guard let student = try await Student.find(arguments.input.id, on: context.db) else {
+            throw Abort(.notFound, reason: "Student not found")
+        }
+
+        if let dob = arguments.input.dob {
+            student.dob = dob
+        }
+
+        try await student.save(on: context.db)
+        return student.convertToPublic()
+    }
+
 }
 
 struct StudentByIDArguments: Codable {
@@ -104,6 +121,13 @@ struct StudentGraphQLCreateInput: Codable {
 struct StudentGraphQLLoginInput: Codable {
     let email: String
     let password: String
+}
+
+struct StudentGraphQLUpdateInput: Codable {
+    let id: UUID
+    let dob: Date?
+    let name: String?
+    let phoneNumber: String?
 }
 
 struct AuthPayload: Codable {
@@ -155,6 +179,12 @@ enum StudentGraphQLSchema {
                 InputField("password", at: \.password)
             }
 
+            Input(StudentGraphQLUpdateInput.self) {
+                InputField("id", at: \.id)
+                InputField("dob", at: \.dob)
+            }
+
+
             Query {
                 Field("students", at: GraphQLResolver.students)
                 Field("student", at: GraphQLResolver.student) {
@@ -169,7 +199,12 @@ enum StudentGraphQLSchema {
                 Field("login", at: GraphQLResolver.login) {
                     Argument("input", at: \.input)
                 }
+                Field("updateStudent", at: GraphQLResolver.updateStudent) {
+                    Argument("input", at: \.input)
+                }
+
             }
+
         }
     }
 }

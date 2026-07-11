@@ -117,7 +117,29 @@ curl -X POST https://localhost:8080/graphql \
     "query": "{ students { id name email phoneNumber dob } }"
   }'
 ```
+query All studends Data:
+curl -X POST https://localhost:8080/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query": "{ students { id name email } }"}'
 
+Response:
+{"data":{"students":[{"name":"Nisha R K","email":"nishark@rnss.com","id":"0722684C-2EE2-4659-9968-559EFB9D831D"},{"name":"Sasvath R N","email":"sasavathrn@iitm.com","id":"09C99B17-C79F-46E2-823A-36BC36E0EC3F"},{"name":"Rajesh Mani","email":"rajeshm@graphql.com","id":"1AA4ADC1-8DBF-4D98-B00D-20EBDFD2E61E"},{"name":"HarithS","email":"harith@rnss.com","id":"231E8EE8-CA7B-400E-ADD9-6A35A38E3509"},{"name":"Rajesh","email":"rajesh@example.com","id":"309CBFDD-8B61-4D0C-A559-01A512DDC0BE"},{"name":"Graph User","email":"graphql@example.com","id":"33A6F8BD-2BB3-4C30-996A-DBDD95D39B6B"},{"name":"Saraswathy Mani","email":"saraswathy@rnss.com","id":"72C3D42B-BF45-4894-BD91-CCA5BAB526C6"},{"name":"Rajesh M","email":"rajeshmani@graphql.com","id":"7E254A89-2936-43CC-8860-A3F501F3BED1"},{"name":"SasvathRN","email":"sasvathrn@rnss.com","id":"964638F5-9B71-4A20-B638-05D859A910F6"},{"name":"Graph User","email":"graphql@graphql.com","id":"B1A1F06B-65B1-40AE-9FA0-4C3EBAED920E"},{"name":"Karthick Mani","email":"karthickmani@graphql.com","id":"B471EDCA-5904-4CE2-94A3-B86B7848184B"},{"name":"ShashanthRN","email":"shashanthrn@rnss.com","id":"D7B43550-17A2-4BFD-B87C-D924DF23ED9A"}]}}
+
+Update student detail query:
+curl -X POST https://localhost:8080/graphql \
+  -H "Content-Type: application/json" \
+  -d '{                                           
+    "query": "mutation UpdateDob($input: StudentGraphQLUpdateInput!) { updateStudent(input: $input) { id name dob } }",
+    "variables": {
+      "input": {
+        "id": "964638F5-9B71-4A20-B638-05D859A910F6",
+        "dob": 286820400
+      }
+    }
+  }'
+  
+Response:
+{"data":{"updateStudent":{"id":"964638F5-9B71-4A20-B638-05D859A910F6","name":"SasvathRN","dob":286820400}}}%    
 
 ## Installing and configuring MySQL on a Mac using Homebrew is a straightforward process. Here's a step-by-step guide:
 
