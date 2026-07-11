@@ -1,4 +1,4 @@
-# StudentAppBackend
+# StudentAppBackend - Vapor swift server with REST & GRAPHQL APIs
 
 💧 A project built with the Vapor swift server framework.
 
