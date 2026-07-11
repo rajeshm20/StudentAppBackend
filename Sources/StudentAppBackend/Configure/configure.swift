@@ -1,6 +1,7 @@
 // MARK: - configure.swift
 import Vapor
 import Fluent
+import SQLKit
 import FluentMySQLDriver
 import JWTKit
 import JWT
@@ -13,14 +14,17 @@ public func configure(_ app: Application) throws {
             app.databases.use(.mysql(
                 hostname: "localhost",
                 username: "root",
-                password: "",
-                database: "student_app_test_db",
-    //            tlsConfiguration: .makeClientConfiguration()
-                tlsConfiguration: .forClient(certificateVerification: .none)
+                password: "password",
+                database: "student_db",
+                tlsConfiguration: {
+                    var tls = TLSConfiguration.makeClientConfiguration()
+                    tls.certificateVerification = .none
+                    return tls
+                }()
             ), as: .mysql)
             // 🔹 Create CORS configuration
             let corsConfig = CORSMiddleware.Configuration(
-                allowedOrigin: .custom("https://your-frontend-domain.com"), // 👈 restrict to your frontend
+                allowedOrigin: .custom("https://studentapp.ddns.net"), // 👈 restrict to your frontend
                 allowedMethods: [.GET, .POST, .PUT, .DELETE, .OPTIONS],
                 allowedHeaders: [.accept, .authorization, .contentType, .origin, .xRequestedWith],
                 allowCredentials: true
@@ -42,15 +46,45 @@ public func configure(_ app: Application) throws {
             app.http.server.configuration.hostname = "127.0.0.1"
             app.http.server.configuration.port = 8443
             
-            app.http.server.configuration.tlsConfiguration = try .makeServerConfiguration(
-                certificateChain: [
-                    .certificate(.init(file: certPath, format: .pem))
-                ],
-                privateKey: .file(keyPath)
+            // Load certificates and private key (PEM) and use the non-deprecated API
+            let certChain = try NIOSSLCertificate.fromPEMFile(certPath).map { NIOSSLCertificateSource.certificate($0) }
+            // If your key is password-protected, use `NIOSSLPrivateKey(file: keyPath, format: .pem, password: "yourPassword")`
+            let nioPrivateKey = try NIOSSLPrivateKey(file: keyPath, format: .pem)
+            app.http.server.configuration.tlsConfiguration = TLSConfiguration.makeServerConfiguration(
+                certificateChain: certChain,
+                privateKey: .privateKey(nioPrivateKey)
             )
+            print("PWD:", FileManager.default.currentDirectoryPath)
+            print("Cert:", certPath)
+            print("Key:", keyPath)
+            print("Cert exists:", FileManager.default.fileExists(atPath: certPath))
+            print("Key exists:", FileManager.default.fileExists(atPath: keyPath))
 
             try routes(app)
         default:
+//        app.get("databases") { req async throws -> [String] in
+//            let db = req.db
+//            let rows = try await db.raw("SHOW DATABASES;").all()
+//            return rows.compactMap { row in
+//                row.column("Database")?.string
+//            }
+//        }
+//        
+//        app.get("tables", ":db") { req async throws -> [String] in
+//            guard let dbName = req.parameters.get("db") else {
+//                throw Abort(.badRequest, reason: "Database name required")
+//            }
+//            
+//            let db = req.db
+//            let rows = try await db.raw("SHOW TABLES IN \(raw: dbName);").all()
+//            
+//            // column name changes depending on MySQL version: usually "Tables_in_<dbName>"
+//            let key = "Tables_in_\(dbName)"
+//            return rows.compactMap { row in
+//                row.column(key)?.string
+//            }
+//        }
+
             app.databases.use(.mysql(
                 hostname: Environment.get("DATABASE_HOST") ?? "localhost",
                 port: Environment.get("DATABASE_PORT").flatMap(Int.init(_:)) ?? MySQLConfiguration.ianaPortNumber,
@@ -58,12 +92,16 @@ public func configure(_ app: Application) throws {
                 password: Environment.get("DATABASE_PASSWORD") ?? "newpassword",
                 database: Environment.get("DATABASE_NAME") ?? "student_db",
     //            tlsConfiguration: .makeClientConfiguration()
-                tlsConfiguration: .forClient(certificateVerification: .none)
+                tlsConfiguration: {
+                    var tls = TLSConfiguration.makeClientConfiguration()
+                    tls.certificateVerification = .none
+                    return tls
+                }()
             ), as: .mysql)
             
             // 🔹 Create CORS configuration
             let corsConfig = CORSMiddleware.Configuration(
-                allowedOrigin: .custom("https://your-frontend-domain.com"), // 👈 restrict to your frontend
+                allowedOrigin: .custom("https://127.0.0.1:8080"), // 👈 restrict to your frontend
                 allowedMethods: [.GET, .POST, .PUT, .DELETE, .OPTIONS],
                 allowedHeaders: [.accept, .authorization, .contentType, .origin, .xRequestedWith],
                 allowCredentials: true
@@ -89,15 +127,25 @@ public func configure(_ app: Application) throws {
                 print("DATABASE_USER not found")
             }
 #endif
+        // Certificates path has been set in Edit Scheme -> RUN -> Arguments, if any change of folders or path should be changed here too.
         let certPath = Environment.get("TLS_CERT") ?? "certs/cert.pem"
         let keyPath  = Environment.get("TLS_KEY")  ?? "certs/key.pem"
-
-        let certs = try NIOSSLCertificate.fromPEMFile(certPath).map { NIOSSLCertificateSource.certificate($0) }
+        let projRoot  = Environment.get("PROJECT_ROOT") ?? ".."
+            print("PWD:", FileManager.default.currentDirectoryPath)
+            print("Cert path:", certPath)
+            print("Key path:", keyPath)
+            print("project root", projRoot)
+            print("Cert exists:", FileManager.default.fileExists(atPath: certPath))
+            print("Key exists:", FileManager.default.fileExists(atPath: keyPath))
+            do {
+                let certs = try NIOSSLCertificate.fromPEMFile(certPath).map { NIOSSLCertificateSource.certificate($0) }
+                print("Loaded \(certs.count) certificate(s)")
+                    // If your key is password-protected, use the initializer with `password:`
+        let nioPrivateKey = try NIOSSLPrivateKey(file: keyPath, format: .pem)
         let tls = TLSConfiguration.makeServerConfiguration(
             certificateChain: certs,
-            privateKey: .file(keyPath)
+            privateKey: .privateKey(nioPrivateKey)
         )
-
         app.http.server.configuration.tlsConfiguration = tls
             // JWT setup
             app.jwt.signers.use(.hs256(key: "your-secret-key".data(using: .utf8)!))
@@ -105,7 +153,12 @@ public func configure(_ app: Application) throws {
             app.migrations.add(CreateStudent())
             try app.autoMigrate().wait()
             try routes(app)
+            } catch {
+                print("Certificate error:", error)
+            }
+
         }
+
 }
 #if DEBUG
 public func main() async throws {

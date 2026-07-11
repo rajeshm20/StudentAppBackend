@@ -24,7 +24,20 @@ struct StudentAppBackendTests {
     @Test("Test Signup Route")
     func testSignup() async throws {
         try await withApp { app in
-            let payload = ["name": "Karthick", "email": "karthickt@example.com", "password": "secret123"]
+            struct SignupPayload: Content {
+                let name: String
+                let email: String
+                let password: String
+                let dob: Date
+                let phoneNumber: String
+            }
+            let payload = SignupPayload(
+                name: "Karthick",
+                email: "karthickt@example.com",
+                password: "secret123",
+                dob: Date(),
+                phoneNumber: "1234567890"
+            )
             try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
                 try req.content.encode(payload)
             }, afterResponse: { res async in
@@ -32,7 +45,10 @@ struct StudentAppBackendTests {
                 do {
                     let body = try res.content.decode(StudentPublic.self)
                     #expect(body.email == "karthickt@example.com")
+                    #expect(body.email == "karthickt@example.com")
                     #expect(body.name == "Karthick")
+                    #expect(body.phoneNumber == "1234567890")
+                    #expect(body.dob != nil)
                 } catch {
                     XCTFail("Failed to decode LoginResponse: \(error)")
                 }
@@ -62,7 +78,44 @@ struct StudentAppBackendTests {
                 }
             })
         }
-    }    
+    }
+
+    @Test("Test GraphQL Signup Mutation")
+    func testGraphQLSignup() async throws {
+        try await withApp { app in
+            let payload = GraphQLSignupRequest(
+                query: """
+                mutation Signup($input: StudentGraphQLCreateInput!) {
+                  signup(input: $input) {
+                    id
+                    name
+                    email
+                  }
+                }
+                """,
+                variables: .init(
+                    input: .init(
+                        name: "Graph User",
+                        email: "graphql@example.com",
+                        password: "secret123"
+                    )
+                )
+            )
+
+            try await app.testing().test(.POST, "graphql", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+                do {
+                    let body = try res.content.decode(GraphQLMutationResponse<StudentPublic>.self)
+                    #expect(body.data?.signup.email == "graphql@example.com")
+                    #expect(body.errors?.isEmpty != false)
+                } catch {
+                    XCTFail("Failed to decode GraphQL response: \(error)")
+                }
+            })
+        }
+    }
 }
 
 // MARK: - Test Response Types
@@ -73,6 +126,8 @@ struct StudentPublic: Content {
     var id: UUID?
     var name: String
     var email: String
+    var dob: Date?
+    var phoneNumber: String?
 }
 
 struct LoginResponse: Content {
@@ -82,4 +137,32 @@ struct LoginResponse: Content {
 
 struct TokenResponse: Content {
     var token: String
+}
+
+struct GraphQLMutationResponse<T: Content>: Content {
+    var data: GraphQLMutationData<T>?
+    var errors: [GraphQLErrorPayload]?
+}
+
+struct GraphQLMutationData<T: Content>: Content {
+    var signup: T
+}
+
+struct GraphQLErrorPayload: Content {
+    var message: String
+}
+
+struct GraphQLSignupRequest: Content {
+    let query: String
+    let variables: GraphQLSignupVariables
+}
+
+struct GraphQLSignupVariables: Content {
+    let input: GraphQLSignupInput
+}
+
+struct GraphQLSignupInput: Content {
+    let name: String
+    let email: String
+    let password: String
 }

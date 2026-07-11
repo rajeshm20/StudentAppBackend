@@ -65,6 +65,59 @@ curl https://localhost:8080/auth/login \
   -d '{"email":"sasvathrn@rnss.com","password":"password123"}'
 ```
 
+## GraphQL
+
+This project now exposes GraphQL at `POST /graphql` alongside the existing REST auth APIs.
+
+Available operations in the first schema:
+
+- `students`: fetch all students
+- `student(id: UUID!)`: fetch one student
+- `signup(input: StudentGraphQLCreateInput!)`: create a student
+- `login(input: StudentGraphQLLoginInput!)`: authenticate and receive a JWT
+
+GraphiQL playground is available at `GET /graphiql`.
+
+Signup mutation:
+```bash
+curl -X POST http://localhost:8080/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation Signup($input: StudentGraphQLCreateInput!) { signup(input: $input) { id name email } }",
+    "variables": {
+      "input": {
+        "name": "Graph User",
+        "email": "graphql@example.com",
+        "password": "password123"
+      }
+    }
+  }'
+```
+
+Login mutation:
+```bash
+curl -X POST http://localhost:8080/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation Login($input: StudentGraphQLLoginInput!) { login(input: $input) { token user { id name email } } }",
+    "variables": {
+      "input": {
+        "email": "graphql@example.com",
+        "password": "password123"
+      }
+    }
+  }'
+```
+
+Students query:
+```bash
+curl -X POST http://localhost:8080/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{ students { id name email phoneNumber dob } }"
+  }'
+```
+
 
 ## Installing and configuring MySQL on a Mac using Homebrew is a straightforward process. Here's a step-by-step guide:
 
@@ -136,15 +189,40 @@ Verify the connection: If successful, you'll see the MySQL prompt, where you can
 To Enable https
 You need to re-generate the cert with CN=localhost:
 
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout key.pem -out cert.pem -days 365 \
-  -subj "/CN=localhost"
-  
+    1. Generate a self-signed cert with CN=localhost.
+    ```
+    openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout key.pem -out cert.pem -days 365 \
+    -subj "/CN=localhost"
+    ```
   Then rebuild the .p12:
-  
+    ```
   openssl pkcs12 -export -out localhost.p12 \
   -inkey key.pem -in cert.pem \
   -name "Vapor Localhost Cert"
+      ```
   
+    2.    Import it into macOS Keychain:
+    
+        Open Keychain Access
+    •    Drag cert.pem in
+    •    Double-click → expand Trust → set “Always Trust”
+    
+    3.    Restart your Vapor app so it reloads certs
   
-  
+    4.    Test again after https enabled.
+    
+    curl https://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"rajesh@example.com","password":"password123"}'
+
+    Now it should work without -k.
+    
+    
+🚀 For Docker / Deployment
+
+    •    If you’re deploying inside Docker on a real server, you shouldn’t use self-signed certs.
+    •    Instead use Let’s Encrypt (certbot) or a trusted CA, so clients don’t need -k or special setup.
+    •    You can also put Nginx or Caddy in front of your Vapor app to handle HTTPS automatically.
+    
+    

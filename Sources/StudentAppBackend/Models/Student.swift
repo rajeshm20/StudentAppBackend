@@ -25,23 +25,33 @@ final class Student: Model, Content,  @unchecked Sendable {
     @Field(key: "passwordHash")
     var passwordHash: String
 
+    @Field(key: "dob")
+    var dob: Date?
+
+    @Field(key: "phoneNumber")
+    var phoneNumber: String?
+
     init() {}
 
-    init(id: UUID? = nil, name: String, email: String, passwordHash: String) {
+    init(id: UUID? = nil, name: String, email: String, passwordHash: String, dob: Date?, phoneNumber: String?) {
         self.id = id
         self.name = name
         self.email = email
-        self.passwordHash = passwordHash
+        self.passwordHash    = passwordHash
+        self.dob = dob
+        self.phoneNumber = phoneNumber
     }
 
     struct Public: Content {
         var id: UUID?
         var name: String
         var email: String
+        var dob: Date?
+        var phoneNumber: String?
     }
 
     func convertToPublic() -> Public {
-        return Public(id: id, name: name, email: email)
+        return Public(id: id, name: name, email: email, dob: dob, phoneNumber: phoneNumber)
     }
 
     struct LoginRequest: Content {
@@ -56,5 +66,7 @@ extension Student {
         let name: String
         let email: String
         let password: String
+        let dob: Date?
+        let phoneNumber: String?
     }
 }

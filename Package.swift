@@ -19,7 +19,9 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
         // jwt
         .package(url: "https://github.com/vapor/jwt.git", from: "4.0.0"),
-        .package(url: "https://github.com/vapor/jwt-kit.git", from: "4.0.0")
+        .package(url: "https://github.com/vapor/jwt-kit.git", from: "4.0.0"),
+        .package(url: "https://github.com/GraphQLSwift/Graphiti.git", from: "1.15.0"),
+        .package(url: "https://github.com/GraphQLSwift/GraphQL.git", from: "2.10.0")
     ],
     targets: [
         .executableTarget(
@@ -32,7 +34,9 @@ let package = Package(
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "JWT", package: "jwt"),
-                .product(name: "JWTKit", package: "jwt-kit")
+                .product(name: "JWTKit", package: "jwt-kit"),
+                .product(name: "Graphiti", package: "Graphiti"),
+                .product(name: "GraphQL", package: "GraphQL")
             ],
             swiftSettings: swiftSettings
         ),

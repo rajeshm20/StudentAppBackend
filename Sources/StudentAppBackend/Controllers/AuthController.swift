@@ -27,7 +27,9 @@ struct AuthController: RouteCollection {
             id: UUID(),
             name: create.name,
             email: create.email,
-            passwordHash: hashedPassword
+            passwordHash: hashedPassword,
+            dob: create.dob,
+            phoneNumber: create.phoneNumber
         )
 
         try await student.save(on: req.db)

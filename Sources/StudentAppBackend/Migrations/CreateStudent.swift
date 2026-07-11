@@ -17,6 +17,8 @@ struct CreateStudent: AsyncMigration {
             .field("email", .string, .required)
             .unique(on: "email")
             .field("passwordHash", .string, .required)
+            .field("dob", .date)
+            .field("phoneNumber", .string)
             .create()
     }
 
