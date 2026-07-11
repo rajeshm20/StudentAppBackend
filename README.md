@@ -80,7 +80,7 @@ GraphiQL playground is available at `GET /graphiql`.
 
 Signup mutation:
 ```bash
-curl -X POST http://localhost:8080/graphql \
+curl -X POST https://localhost:8080/graphql \
   -H "Content-Type: application/json" \
   -d '{
     "query": "mutation Signup($input: StudentGraphQLCreateInput!) { signup(input: $input) { id name email } }",
@@ -96,7 +96,7 @@ curl -X POST http://localhost:8080/graphql \
 
 Login mutation:
 ```bash
-curl -X POST http://localhost:8080/graphql \
+curl -X POST https://localhost:8080/graphql \
   -H "Content-Type: application/json" \
   -d '{
     "query": "mutation Login($input: StudentGraphQLLoginInput!) { login(input: $input) { token user { id name email } } }",
@@ -111,7 +111,7 @@ curl -X POST http://localhost:8080/graphql \
 
 Students query:
 ```bash
-curl -X POST http://localhost:8080/graphql \
+curl -X POST https://localhost:8080/graphql \
   -H "Content-Type: application/json" \
   -d '{
     "query": "{ students { id name email phoneNumber dob } }"
