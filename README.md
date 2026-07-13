@@ -79,18 +79,18 @@ docker compose -f docker-compose.package.yml up -d
 
 After the package is running, try the endpoints below.
 
-With HTTP:
+Docker package endpoints use HTTP:
 
 SignUp
-```
-curl -k -X POST  https://localhost:8080/auth/signup \
+```bash
+curl -X POST http://localhost:8080/auth/signup \
   -H "Content-Type: application/json" \
   -d '{"name":"SasvathRN", "email": "sasvathrn@rnss.com", "password":"password123"}'
 ```
 
 Login
-```
-curl -k -X POST https://localhost:8080/auth/login \
+```bash
+curl -X POST http://localhost:8080/auth/login \
   -H "Content-Type: application/json" \
   -d '{
     "email": "rajesh@example.com",
@@ -98,19 +98,16 @@ curl -k -X POST https://localhost:8080/auth/login \
   }'
 ```
 
-with https
-Signup
+## HTTPS with Caddy
+
+To run the same backend image behind Caddy with HTTPS termination, use [docker-compose.caddy.yml](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.caddy.yml).
+
 ```bash
- curl https://localhost:8080/auth/signup \
-  -H "Content-Type: application/json" \
-  -d '{"name":"SasvathRN", "email": "sasvathrn@rnss.com", "password":"password123"}'
+docker compose -f docker-compose.caddy.yml up -d
 ```
-Login
-```bash
-curl https://localhost:8080/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"sasvathrn@rnss.com","password":"password123"}'
-```
+
+This keeps the app container on HTTP only and lets Caddy handle HTTPS on port `443`.
+For local testing with Caddy's internal CA, use `https://localhost` and allow the temporary certificate in your client if needed.
 
 ## GraphQL
 
@@ -127,7 +124,7 @@ GraphiQL playground is available at `GET /graphiql`.
 
 Signup mutation:
 ```bash
-curl -X POST https://localhost:8080/graphql \
+curl -X POST http://localhost:8080/graphql \
   -H "Content-Type: application/json" \
   -d '{
     "query": "mutation Signup($input: StudentGraphQLCreateInput!) { signup(input: $input) { id name email } }",
@@ -143,7 +140,7 @@ curl -X POST https://localhost:8080/graphql \
 
 Login mutation:
 ```bash
-curl -X POST https://localhost:8080/graphql \
+curl -X POST http://localhost:8080/graphql \
   -H "Content-Type: application/json" \
   -d '{
     "query": "mutation Login($input: StudentGraphQLLoginInput!) { login(input: $input) { token user { id name email } } }",
@@ -158,14 +155,14 @@ curl -X POST https://localhost:8080/graphql \
 
 Students query:
 ```bash
-curl -X POST https://localhost:8080/graphql \
+curl -X POST http://localhost:8080/graphql \
   -H "Content-Type: application/json" \
   -d '{
     "query": "{ students { id name email phoneNumber dob } }"
   }'
 ```
 query All studends Data:
-curl -X POST https://localhost:8080/graphql \
+curl -X POST http://localhost:8080/graphql \
   -H "Content-Type: application/json" \
   -d '{"query": "{ students { id name email } }"}'
 
@@ -173,7 +170,7 @@ Response:
 {"data":{"students":[{"name":"Nisha R K","email":"nishark@rnss.com","id":"0722684C-2EE2-4659-9968-559EFB9D831D"},{"name":"Sasvath R N","email":"sasavathrn@iitm.com","id":"09C99B17-C79F-46E2-823A-36BC36E0EC3F"},{"name":"Rajesh Mani","email":"rajeshm@graphql.com","id":"1AA4ADC1-8DBF-4D98-B00D-20EBDFD2E61E"},{"name":"HarithS","email":"harith@rnss.com","id":"231E8EE8-CA7B-400E-ADD9-6A35A38E3509"},{"name":"Rajesh","email":"rajesh@example.com","id":"309CBFDD-8B61-4D0C-A559-01A512DDC0BE"},{"name":"Graph User","email":"graphql@example.com","id":"33A6F8BD-2BB3-4C30-996A-DBDD95D39B6B"},{"name":"Saraswathy Mani","email":"saraswathy@rnss.com","id":"72C3D42B-BF45-4894-BD91-CCA5BAB526C6"},{"name":"Rajesh M","email":"rajeshmani@graphql.com","id":"7E254A89-2936-43CC-8860-A3F501F3BED1"},{"name":"SasvathRN","email":"sasvathrn@rnss.com","id":"964638F5-9B71-4A20-B638-05D859A910F6"},{"name":"Graph User","email":"graphql@graphql.com","id":"B1A1F06B-65B1-40AE-9FA0-4C3EBAED920E"},{"name":"Karthick Mani","email":"karthickmani@graphql.com","id":"B471EDCA-5904-4CE2-94A3-B86B7848184B"},{"name":"ShashanthRN","email":"shashanthrn@rnss.com","id":"D7B43550-17A2-4BFD-B87C-D924DF23ED9A"}]}}
 
 Update student detail query:
-curl -X POST https://localhost:8080/graphql \
+curl -X POST http://localhost:8080/graphql \
   -H "Content-Type: application/json" \
   -d '{                                           
     "query": "mutation UpdateDob($input: StudentGraphQLUpdateInput!) { updateStudent(input: $input) { id name dob } }",
@@ -279,8 +276,8 @@ You need to re-generate the cert with CN=localhost:
     
     3.    Restart your Vapor app so it reloads certs
   
-    4.    Test again after https enabled.
-    
+    4.    Test again after https enabled in native local development.
+
     curl https://localhost:8080/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"rajesh@example.com","password":"password123"}'
@@ -290,8 +287,8 @@ You need to re-generate the cert with CN=localhost:
     
 🚀 For Docker / Deployment
 
-    •    If you’re deploying inside Docker on a real server, you shouldn’t use self-signed certs.
-    •    Instead use Let’s Encrypt (certbot) or a trusted CA, so clients don’t need -k or special setup.
-    •    You can also put Nginx or Caddy in front of your Vapor app to handle HTTPS automatically.
+    •    If you’re deploying inside Docker on a real server, keep the app container on HTTP.
+    •    Terminate TLS in Caddy or Nginx in front of the app.
+    •    Avoid baking local self-signed certs into the backend image.
     
     

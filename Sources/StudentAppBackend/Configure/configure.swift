@@ -7,6 +7,15 @@ import JWTKit
 import JWT
 import Logging
 import NIOSSL
+
+private func shouldEnableTLS(certPath: String, keyPath: String) -> Bool {
+    let flag = Environment.get("ENABLE_HTTPS")?.lowercased()
+    let tlsRequested = flag == "1" || flag == "true" || flag == "yes"
+    let hasTLSFiles = FileManager.default.fileExists(atPath: certPath)
+        && FileManager.default.fileExists(atPath: keyPath)
+    return tlsRequested && hasTLSFiles
+}
+
 public func configure(_ app: Application) throws {
         // Continue with your routes / middleware
     switch app.environment {
@@ -131,8 +140,7 @@ public func configure(_ app: Application) throws {
         // Certificates path has been set in Edit Scheme -> RUN -> Arguments, if any change of folders or path should be changed here too.
         let certPath = Environment.get("TLS_CERT") ?? "certs/cert.pem"
         let keyPath  = Environment.get("TLS_KEY")  ?? "certs/key.pem"
-        let hasTLSFiles = FileManager.default.fileExists(atPath: certPath)
-            && FileManager.default.fileExists(atPath: keyPath)
+        let tlsEnabled = shouldEnableTLS(certPath: certPath, keyPath: keyPath)
 
         print("PWD:", FileManager.default.currentDirectoryPath)
         print("Cert path:", certPath)
@@ -140,7 +148,7 @@ public func configure(_ app: Application) throws {
         print("Cert exists:", FileManager.default.fileExists(atPath: certPath))
         print("Key exists:", FileManager.default.fileExists(atPath: keyPath))
 
-        if hasTLSFiles {
+        if tlsEnabled {
             do {
                 let certs = try NIOSSLCertificate.fromPEMFile(certPath).map { NIOSSLCertificateSource.certificate($0) }
                 let nioPrivateKey = try NIOSSLPrivateKey(file: keyPath, format: .pem)
@@ -154,7 +162,7 @@ public func configure(_ app: Application) throws {
                 app.logger.warning("TLS certificates could not be loaded. Continuing without HTTPS: \(error)")
             }
         } else {
-            app.logger.notice("TLS certificates not found. Starting container on HTTP.")
+            app.logger.notice("HTTPS disabled. Starting server on HTTP.")
         }
 
         // JWT setup
