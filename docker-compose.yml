@@ -20,10 +20,11 @@ volumes:
 
 x-shared_environment: &shared_environment
   LOG_LEVEL: ${LOG_LEVEL:-debug}
-  DB_HOST: localhost
-  DB_NAME: student_db
-  DB_USER: ${DATABASE_USERNAME:-root}
-  DB_PASSWORD: ${DATABASE_PASSWORD:-newpassword}
+  DATABASE_HOST: db
+  DATABASE_PORT: 3306
+  DATABASE_NAME: ${DATABASE_NAME:-student_db}
+  DATABASE_USER: ${DATABASE_USER:-root}
+  DATABASE_PASSWORD: ${DATABASE_PASSWORD:-password}
 
 services:
   app:
@@ -33,7 +34,8 @@ services:
     environment:
       <<: *shared_environment
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     ports:
       - '8080:8080'
     # user: '0' # uncomment to run as root for testing purposes even though Dockerfile defines 'vapor' user.
@@ -67,8 +69,8 @@ services:
     volumes:
       - db_data:/var/lib/mysql
     environment:
-      MYSQL_ROOT_PASSWORD: password
-      MYSQL_DATABASE: student_db
+      MYSQL_ROOT_PASSWORD: ${DATABASE_PASSWORD:-password}
+      MYSQL_DATABASE: ${DATABASE_NAME:-student_db}
       # MYSQL_USER: vapor_user
       # MYSQL_PASSWORD: StrongPassword123
       # MYSQL_DATABASE: student_db
@@ -76,8 +78,9 @@ services:
     ports:
       - '3306:3306'
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${DATABASE_PASSWORD:-password}"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 20s
 

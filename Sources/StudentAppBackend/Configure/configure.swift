@@ -130,33 +130,38 @@ public func configure(_ app: Application) throws {
         // Certificates path has been set in Edit Scheme -> RUN -> Arguments, if any change of folders or path should be changed here too.
         let certPath = Environment.get("TLS_CERT") ?? "certs/cert.pem"
         let keyPath  = Environment.get("TLS_KEY")  ?? "certs/key.pem"
-        let projRoot  = Environment.get("PROJECT_ROOT") ?? ".."
-            print("PWD:", FileManager.default.currentDirectoryPath)
-            print("Cert path:", certPath)
-            print("Key path:", keyPath)
-            print("project root", projRoot)
-            print("Cert exists:", FileManager.default.fileExists(atPath: certPath))
-            print("Key exists:", FileManager.default.fileExists(atPath: keyPath))
+        let hasTLSFiles = FileManager.default.fileExists(atPath: certPath)
+            && FileManager.default.fileExists(atPath: keyPath)
+
+        print("PWD:", FileManager.default.currentDirectoryPath)
+        print("Cert path:", certPath)
+        print("Key path:", keyPath)
+        print("Cert exists:", FileManager.default.fileExists(atPath: certPath))
+        print("Key exists:", FileManager.default.fileExists(atPath: keyPath))
+
+        if hasTLSFiles {
             do {
                 let certs = try NIOSSLCertificate.fromPEMFile(certPath).map { NIOSSLCertificateSource.certificate($0) }
+                let nioPrivateKey = try NIOSSLPrivateKey(file: keyPath, format: .pem)
+                let tls = TLSConfiguration.makeServerConfiguration(
+                    certificateChain: certs,
+                    privateKey: .privateKey(nioPrivateKey)
+                )
+                app.http.server.configuration.tlsConfiguration = tls
                 print("Loaded \(certs.count) certificate(s)")
-                    // If your key is password-protected, use the initializer with `password:`
-        let nioPrivateKey = try NIOSSLPrivateKey(file: keyPath, format: .pem)
-        let tls = TLSConfiguration.makeServerConfiguration(
-            certificateChain: certs,
-            privateKey: .privateKey(nioPrivateKey)
-        )
-        app.http.server.configuration.tlsConfiguration = tls
-            // JWT setup
-            app.jwt.signers.use(.hs256(key: "your-secret-key".data(using: .utf8)!))
-            // Add migrations
-            app.migrations.add(CreateStudent())
-            try app.autoMigrate().wait()
-            try routes(app)
             } catch {
-                print("Certificate error:", error)
-                app.logger.critical("Startup failed: \(error)")
+                app.logger.warning("TLS certificates could not be loaded. Continuing without HTTPS: \(error)")
             }
+        } else {
+            app.logger.notice("TLS certificates not found. Starting container on HTTP.")
+        }
+
+        // JWT setup
+        app.jwt.signers.use(.hs256(key: "your-secret-key".data(using: .utf8)!))
+        // Add migrations
+        app.migrations.add(CreateStudent())
+        try app.autoMigrate().wait()
+        try routes(app)
 
         }
 

@@ -47,12 +47,25 @@ git push origin v1.0.0
 - [Vapor Community](https://github.com/vapor-community)
 
 
-After
+## Complete Docker package
+
+The published image `ghcr.io/rajeshm20/studentappbackend:latest` contains only the backend application.
+To run a complete workable package with MySQL, use [docker-compose.package.yml](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.package.yml).
+
 ```bash
-docker pull ghcr.io/rajeshm20/studentappbackend:latest
+docker compose -f docker-compose.package.yml up -d
 ```
-pulling the docker image and successfully running that includes StudentAppBackend app and mysql, try below endpoints using curl
-with http
+
+That package starts:
+
+- `ghcr.io/rajeshm20/studentappbackend:latest`
+- `mysql:8`
+
+For local source-based development, [docker-compose.yml](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.yml) does the same but builds the backend image from this repo.
+
+After the package is running, try the endpoints below.
+
+With HTTP:
 
 SignUp
 ```
