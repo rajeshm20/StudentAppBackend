@@ -19,6 +19,26 @@ To execute tests, use the following command:
 swift test
 ```
 
+## Docker image publishing
+
+This repository publishes the backend container to GitHub Container Registry using the workflow at `.github/workflows/docker-publish.yml`.
+
+- Default image: `ghcr.io/rajeshm20/studentappbackend:latest`
+- Additional tags: `main`, git tags like `v1.0.0`, and commit SHA tags
+
+To trigger a publish:
+
+```bash
+git push origin main
+```
+
+Or create a versioned image tag:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
 ### See more
 
 - [Vapor Website](https://vapor.codes)
