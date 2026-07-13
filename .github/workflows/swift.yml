@@ -11,8 +11,27 @@ on:
 
 jobs:
   build:
-
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
+    container:
+      image: swift:6.0-noble
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: password
+          MYSQL_DATABASE: student_db
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -ppassword"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+          --health-start-period=20s
+    env:
+      DATABASE_HOST: mysql
+      DATABASE_PORT: 3306
+      DATABASE_USER: root
+      DATABASE_PASSWORD: password
+      DATABASE_NAME: student_db
 
     steps:
     - uses: actions/checkout@v4
