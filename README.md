@@ -61,7 +61,21 @@ That package starts:
 - `ghcr.io/rajeshm20/studentappbackend:latest`
 - `mysql:8`
 
+The package uses MySQL root by default:
+
+- `DATABASE_USER=root`
+- `DATABASE_PASSWORD=newpassword`
+- `MYSQL_ROOT_PASSWORD=newpassword`
+- `MYSQL_ROOT_HOST=%`
+
 For local source-based development, [docker-compose.yml](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.yml) does the same but builds the backend image from this repo.
+
+If you already started MySQL with older credentials or host permissions, recreate the volume once so MySQL can initialize with the updated root access:
+
+```bash
+docker compose -f docker-compose.package.yml down -v
+docker compose -f docker-compose.package.yml up -d
+```
 
 After the package is running, try the endpoints below.
 

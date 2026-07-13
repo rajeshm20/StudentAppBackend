@@ -24,7 +24,7 @@ x-shared_environment: &shared_environment
   DATABASE_PORT: 3306
   DATABASE_NAME: ${DATABASE_NAME:-student_db}
   DATABASE_USER: ${DATABASE_USER:-root}
-  DATABASE_PASSWORD: ${DATABASE_PASSWORD:-password}
+  DATABASE_PASSWORD: ${DATABASE_PASSWORD:-newpassword}
 
 services:
   app:
@@ -69,18 +69,14 @@ services:
     volumes:
       - db_data:/var/lib/mysql
     environment:
-      MYSQL_ROOT_PASSWORD: ${DATABASE_PASSWORD:-password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-newpassword}
+      MYSQL_ROOT_HOST: ${MYSQL_ROOT_HOST:-%}
       MYSQL_DATABASE: ${DATABASE_NAME:-student_db}
-      # MYSQL_USER: vapor_user
-      # MYSQL_PASSWORD: StrongPassword123
-      # MYSQL_DATABASE: student_db
-      # MYSQL_ROOT_PASSWORD: "password"
     ports:
       - '3306:3306'
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${DATABASE_PASSWORD:-password}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD:-newpassword}"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 20s
-
