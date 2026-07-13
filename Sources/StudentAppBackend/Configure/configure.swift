@@ -72,29 +72,6 @@ public func configure(_ app: Application) throws {
 
             try routes(app)
         default:
-//        app.get("databases") { req async throws -> [String] in
-//            let db = req.db
-//            let rows = try await db.raw("SHOW DATABASES;").all()
-//            return rows.compactMap { row in
-//                row.column("Database")?.string
-//            }
-//        }
-//        
-//        app.get("tables", ":db") { req async throws -> [String] in
-//            guard let dbName = req.parameters.get("db") else {
-//                throw Abort(.badRequest, reason: "Database name required")
-//            }
-//            
-//            let db = req.db
-//            let rows = try await db.raw("SHOW TABLES IN \(raw: dbName);").all()
-//            
-//            // column name changes depending on MySQL version: usually "Tables_in_<dbName>"
-//            let key = "Tables_in_\(dbName)"
-//            return rows.compactMap { row in
-//                row.column(key)?.string
-//            }
-//        }
-
             app.databases.use(.mysql(
                 hostname: Environment.get("DATABASE_HOST") ?? "localhost",
                 port: Environment.get("DATABASE_PORT").flatMap(Int.init(_:)) ?? MySQLConfiguration.ianaPortNumber,
