@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900" viewBox="0 0 1200 900" role="img" aria-labelledby="title desc">
+  <title id="title">Code Architecture Diagram</title>
+  <desc id="desc">Code architecture diagram for the Vapor application structure.</desc>
+  <defs>
+    <style>
+      .title { font: 700 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .label { font: 600 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .small { font: 500 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+      .box { fill: #f8fafc; stroke: #2563eb; stroke-width: 2; rx: 14; ry: 14; }
+      .db { fill: #eff6ff; stroke: #1d4ed8; stroke-width: 2; rx: 16; ry: 16; }
+      .arrow { stroke: #475569; stroke-width: 2.2; fill: none; marker-end: url(#arrowhead); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#475569"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="900" fill="#ffffff"/>
+  <text x="40" y="46" class="title">Code Architecture Diagram</text>
+
+  <rect x="500" y="80" width="200" height="70" class="box"/>
+  <text x="600" y="122" text-anchor="middle" class="label">entrypoint.swift</text>
+
+  <rect x="470" y="190" width="260" height="78" class="box"/>
+  <text x="600" y="235" text-anchor="middle" class="label">Configure/configure.swift</text>
+
+  <rect x="100" y="330" width="220" height="78" class="box"/>
+  <text x="210" y="375" text-anchor="middle" class="label">Configure/DBManager.swift</text>
+
+  <rect x="360" y="330" width="220" height="78" class="box"/>
+  <text x="470" y="375" text-anchor="middle" class="label">Configure/*Middleware.swift</text>
+
+  <rect x="620" y="330" width="220" height="78" class="box"/>
+  <text x="730" y="375" text-anchor="middle" class="label">Migrations/CreateStudent.swift</text>
+
+  <rect x="880" y="330" width="220" height="78" class="box"/>
+  <text x="990" y="375" text-anchor="middle" class="label">Routes/routes.swift</text>
+
+  <rect x="810" y="470" width="250" height="78" class="box"/>
+  <text x="935" y="515" text-anchor="middle" class="label">Controllers/AuthController.swift</text>
+
+  <rect x="520" y="470" width="240" height="78" class="box"/>
+  <text x="640" y="515" text-anchor="middle" class="label">Routes/graphqlRoutes.swift</text>
+
+  <rect x="510" y="610" width="260" height="78" class="box"/>
+  <text x="640" y="655" text-anchor="middle" class="label">GraphQL/GraphQLAPI.swift</text>
+
+  <rect x="220" y="610" width="220" height="78" class="box"/>
+  <text x="330" y="655" text-anchor="middle" class="label">Services/StudentService.swift</text>
+
+  <rect x="810" y="610" width="220" height="78" class="box"/>
+  <text x="920" y="655" text-anchor="middle" class="label">Models/Student.swift</text>
+
+  <rect x="1040" y="610" width="130" height="78" class="box"/>
+  <text x="1105" y="655" text-anchor="middle" class="label">StudentToken.swift</text>
+
+  <rect x="820" y="780" width="220" height="78" class="db"/>
+  <text x="930" y="825" text-anchor="middle" class="label">MySQL Database</text>
+
+  <rect x="70" y="780" width="270" height="78" class="box"/>
+  <text x="205" y="825" text-anchor="middle" class="label">Tests/StudentAppBackendTests</text>
+
+  <path d="M600 150 L600 190" class="arrow"/>
+  <path d="M560 268 L210 330" class="arrow"/>
+  <path d="M590 268 L470 330" class="arrow"/>
+  <path d="M620 268 L730 330" class="arrow"/>
+  <path d="M660 268 L990 330" class="arrow"/>
+  <path d="M990 408 L935 470" class="arrow"/>
+  <path d="M930 408 L700 470" class="arrow"/>
+  <path d="M640 548 L640 610" class="arrow"/>
+  <path d="M860 548 L330 610" class="arrow"/>
+  <path d="M920 548 L920 610" class="arrow"/>
+  <path d="M970 548 L1105 610" class="arrow"/>
+  <path d="M700 688 L330 688 L330 688" class="arrow"/>
+  <path d="M760 688 L920 688" class="arrow"/>
+  <path d="M760 650 L1105 650" class="arrow"/>
+  <path d="M920 688 L930 780" class="arrow"/>
+  <path d="M730 408 L930 780" class="arrow"/>
+  <path d="M205 780 L935 548" class="arrow"/>
+  <path d="M205 780 L640 688" class="arrow"/>
+  <path d="M205 780 L875 548" class="arrow"/>
+</svg>

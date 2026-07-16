@@ -1,0 +1,41 @@
+@startuml
+top to bottom direction
+skinparam packageStyle rectangle
+skinparam shadowing false
+
+rectangle "entrypoint.swift" as Entry
+rectangle "Configure/configure.swift" as Configure
+rectangle "Routes/routes.swift" as Routes
+rectangle "Routes/graphqlRoutes.swift" as GraphQLRoutes
+rectangle "Controllers/AuthController.swift" as AuthController
+rectangle "GraphQL/GraphQLAPI.swift" as GraphQLAPI
+rectangle "Services/StudentService.swift" as StudentService
+rectangle "Models/Student.swift" as StudentModel
+rectangle "Controllers/StudentToken.swift" as StudentToken
+rectangle "Migrations/CreateStudent.swift" as Migration
+rectangle "Configure/*Middleware.swift" as Middleware
+rectangle "Configure/DBManager.swift\nDatabase setup helpers" as DBConfig
+database "MySQL Database" as MySQL
+rectangle "Tests/StudentAppBackendTests" as Tests
+
+Entry --> Configure
+Configure --> DBConfig
+Configure --> Middleware
+Configure --> Migration
+Configure --> Routes
+Routes --> AuthController
+Routes --> GraphQLRoutes
+AuthController --> StudentService
+AuthController --> StudentModel
+AuthController --> StudentToken
+GraphQLRoutes --> GraphQLAPI
+GraphQLAPI --> StudentService
+GraphQLAPI --> StudentModel
+GraphQLAPI --> StudentToken
+StudentService --> StudentModel
+StudentModel --> MySQL
+Migration --> MySQL
+Tests --> Routes
+Tests --> GraphQLAPI
+Tests --> AuthController
+@enduml

@@ -21,25 +21,25 @@ Vapor-based Swift backend that exposes student authentication APIs over REST and
 
 ## Server Diagram
 
-[![Server Runtime Diagram](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docs/diagrams/server-runtime.svg)](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docs/diagrams/server-runtime.puml)
+[![Server Runtime Diagram](docs/diagrams/server-runtime.svg)](docs/diagrams/server-runtime.puml)
 
-Click the diagram to open the PlantUML source: [server-runtime.puml](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docs/diagrams/server-runtime.puml)
+PlantUML source: [server-runtime.puml](docs/diagrams/server-runtime.puml)
 
 This diagram shows the runtime flow between clients, the Vapor server, REST routes, GraphQL routes, authentication logic, and MySQL.
 
 ## Project Structure
 
-- [`Sources/StudentAppBackend`](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/Sources/StudentAppBackend): application source
-- [`Tests/StudentAppBackendTests`](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/Tests/StudentAppBackendTests): test suite
-- [`docker-compose.yml`](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.yml): local source-based development
-- [`docker-compose.package.yml`](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.package.yml): packaged backend + MySQL
-- [`docker-compose.caddy.yml`](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.caddy.yml): backend behind Caddy with HTTPS termination
+- [`Sources/StudentAppBackend`](Sources/StudentAppBackend): application source
+- [`Tests/StudentAppBackendTests`](Tests/StudentAppBackendTests): test suite
+- [`docker-compose.yml`](docker-compose.yml): local source-based development
+- [`docker-compose.package.yml`](docker-compose.package.yml): packaged backend + MySQL
+- [`docker-compose.caddy.yml`](docker-compose.caddy.yml): backend behind Caddy with HTTPS termination
 
 ## Code Architecture
 
-[![Code Architecture Diagram](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docs/diagrams/code-architecture.svg)](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docs/diagrams/code-architecture.puml)
+[![Code Architecture Diagram](docs/diagrams/code-architecture.svg)](docs/diagrams/code-architecture.puml)
 
-Click the diagram to open the PlantUML source: [code-architecture.puml](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docs/diagrams/code-architecture.puml)
+PlantUML source: [code-architecture.puml](docs/diagrams/code-architecture.puml)
 
 This diagram shows how `configure.swift`, routes, controllers, GraphQL, services, models, migrations, middleware, and tests fit together in the codebase.
 
@@ -94,7 +94,7 @@ git push origin v1.0.0
 
 ### Complete Packaged Setup
 
-The published image contains only the backend application. To run the backend together with MySQL, use [`docker-compose.package.yml`](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.package.yml).
+The published image contains only the backend application. To run the backend together with MySQL, use [`docker-compose.package.yml`](docker-compose.package.yml).
 
 ```bash
 docker compose -f docker-compose.package.yml up -d
@@ -112,7 +112,7 @@ Default database-related values:
 - `MYSQL_ROOT_PASSWORD=newpassword`
 - `MYSQL_ROOT_HOST=%`
 
-For local development from source, use [`docker-compose.yml`](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.yml). It provides the same runtime shape but builds the backend image from this repository.
+For local development from source, use [`docker-compose.yml`](docker-compose.yml). It provides the same runtime shape but builds the backend image from this repository.
 
 If MySQL was previously started with older credentials or host permissions, recreate the volume once:
 
@@ -264,7 +264,7 @@ curl https://localhost:8080/auth/login \
 
 ### HTTPS with Caddy
 
-To run the backend behind Caddy with TLS termination, use [`docker-compose.caddy.yml`](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.caddy.yml).
+To run the backend behind Caddy with TLS termination, use [`docker-compose.caddy.yml`](docker-compose.caddy.yml).
 
 ```bash
 docker compose -f docker-compose.caddy.yml up -d

@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
+  <title id="title">Server Runtime Diagram</title>
+  <desc id="desc">Architecture diagram for clients, proxy, Vapor server, REST API, GraphQL API, auth logic, student domain logic, and MySQL.</desc>
+  <defs>
+    <style>
+      .title { font: 700 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .label { font: 600 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .small { font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+      .box { fill: #f8fafc; stroke: #2563eb; stroke-width: 2; rx: 16; ry: 16; }
+      .db { fill: #eff6ff; stroke: #1d4ed8; stroke-width: 2; rx: 16; ry: 16; }
+      .arrow { stroke: #475569; stroke-width: 2.5; fill: none; marker-end: url(#arrowhead); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#475569"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="520" fill="#ffffff"/>
+  <text x="40" y="46" class="title">Server Runtime Diagram</text>
+
+  <rect x="40" y="140" width="180" height="90" class="box"/>
+  <text x="130" y="176" text-anchor="middle" class="label">Client Apps</text>
+  <text x="130" y="201" text-anchor="middle" class="small">iOS / Web / curl / GraphiQL</text>
+
+  <rect x="270" y="140" width="190" height="90" class="box"/>
+  <text x="365" y="176" text-anchor="middle" class="label">Optional Reverse Proxy</text>
+  <text x="365" y="201" text-anchor="middle" class="small">Caddy / Nginx</text>
+
+  <rect x="510" y="130" width="210" height="110" class="box"/>
+  <text x="615" y="176" text-anchor="middle" class="label">Vapor Server</text>
+  <text x="615" y="201" text-anchor="middle" class="small">StudentAppBackend</text>
+
+  <rect x="790" y="70" width="170" height="100" class="box"/>
+  <text x="875" y="108" text-anchor="middle" class="label">REST API</text>
+  <text x="875" y="133" text-anchor="middle" class="small">/auth/signup</text>
+  <text x="875" y="153" text-anchor="middle" class="small">/auth/login</text>
+
+  <rect x="790" y="220" width="170" height="110" class="box"/>
+  <text x="875" y="258" text-anchor="middle" class="label">GraphQL API</text>
+  <text x="875" y="283" text-anchor="middle" class="small">POST /graphql</text>
+  <text x="875" y="303" text-anchor="middle" class="small">GET /graphiql</text>
+
+  <rect x="1010" y="70" width="150" height="100" class="box"/>
+  <text x="1085" y="108" text-anchor="middle" class="label">Auth Logic</text>
+  <text x="1085" y="133" text-anchor="middle" class="small">Bcrypt + JWT</text>
+
+  <rect x="1000" y="220" width="170" height="110" class="box"/>
+  <text x="1085" y="268" text-anchor="middle" class="label">Student Domain Logic</text>
+
+  <rect x="965" y="390" width="200" height="90" class="db"/>
+  <text x="1065" y="426" text-anchor="middle" class="label">MySQL Database</text>
+  <text x="1065" y="451" text-anchor="middle" class="small">students table</text>
+
+  <path d="M220 185 L270 185" class="arrow"/>
+  <path d="M220 205 L510 205" class="arrow"/>
+  <path d="M460 185 L510 185" class="arrow"/>
+  <path d="M720 160 L790 120" class="arrow"/>
+  <path d="M720 210 L790 265" class="arrow"/>
+  <path d="M960 120 L1010 120" class="arrow"/>
+  <path d="M960 275 L1000 275" class="arrow"/>
+  <path d="M875 170 L1085 170 L1085 170" class="arrow"/>
+  <path d="M875 220 L875 180 L1010 180" class="arrow"/>
+  <path d="M1085 170 L1085 390" class="arrow"/>
+  <path d="M1085 330 L1085 390" class="arrow"/>
+</svg>

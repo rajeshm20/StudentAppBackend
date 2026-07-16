@@ -1,0 +1,26 @@
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+skinparam shadowing false
+
+actor "Client Apps\n(iOS / Web / curl / GraphiQL)" as Client
+rectangle "Optional Reverse Proxy\nCaddy / Nginx" as Proxy
+rectangle "Vapor Server\nStudentAppBackend" as Vapor
+rectangle "REST API\n/auth/signup\n/auth/login" as Rest
+rectangle "GraphQL API\nPOST /graphql\nGET /graphiql" as GraphQLApi
+rectangle "Auth Logic\nBcrypt + JWT" as Auth
+rectangle "Student Domain Logic" as Domain
+database "MySQL Database\nstudents table" as MySQL
+
+Client --> Proxy
+Client --> Vapor
+Proxy --> Vapor
+Vapor --> Rest
+Vapor --> GraphQLApi
+Rest --> Auth
+Rest --> Domain
+GraphQLApi --> Auth
+GraphQLApi --> Domain
+Auth --> MySQL
+Domain --> MySQL
+@enduml
