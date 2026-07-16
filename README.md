@@ -1,94 +1,150 @@
-# StudentAppBackend - Vapor swift server with REST & GRAPHQL APIs
+# StudentAppBackend
 
-💧 A project built with the Vapor swift server framework.
+Vapor-based Swift backend that exposes student authentication APIs over REST and additional student APIs over GraphQL.
 
-## Getting Started
+## Overview
 
-To build the project using the Swift Package Manager, run the following command in the terminal from the root of the project:
+- Framework: Vapor 4
+- Language: Swift 6
+- Database: MySQL
+- API styles: REST and GraphQL
+- Container registry: GitHub Container Registry
+
+## Features
+
+- Student signup and login over REST
+- GraphQL endpoint for student queries and mutations
+- JWT-based authentication
+- Docker-based local development
+- Optional HTTPS support for native local runs
+- Optional reverse-proxy TLS termination with Caddy
+
+## Server Diagram
+
+[![Server Runtime Diagram](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docs/diagrams/server-runtime.svg)](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docs/diagrams/server-runtime.puml)
+
+Click the diagram to open the PlantUML source: [server-runtime.puml](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docs/diagrams/server-runtime.puml)
+
+This diagram shows the runtime flow between clients, the Vapor server, REST routes, GraphQL routes, authentication logic, and MySQL.
+
+## Project Structure
+
+- [`Sources/StudentAppBackend`](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/Sources/StudentAppBackend): application source
+- [`Tests/StudentAppBackendTests`](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/Tests/StudentAppBackendTests): test suite
+- [`docker-compose.yml`](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.yml): local source-based development
+- [`docker-compose.package.yml`](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.package.yml): packaged backend + MySQL
+- [`docker-compose.caddy.yml`](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.caddy.yml): backend behind Caddy with HTTPS termination
+
+## Code Architecture
+
+[![Code Architecture Diagram](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docs/diagrams/code-architecture.svg)](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docs/diagrams/code-architecture.puml)
+
+Click the diagram to open the PlantUML source: [code-architecture.puml](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docs/diagrams/code-architecture.puml)
+
+This diagram shows how `configure.swift`, routes, controllers, GraphQL, services, models, migrations, middleware, and tests fit together in the codebase.
+
+## Requirements
+
+- macOS 13 or later
+- Swift 6 toolchain / Xcode compatible with the package
+- MySQL 8 if running outside Docker
+- Docker and Docker Compose for container-based setup
+
+## Local Development
+
+### Build
+
 ```bash
 swift build
 ```
 
-To run the project and start the server, use the following command:
+### Run
+
 ```bash
 swift run
 ```
 
-To execute tests, use the following command:
+### Test
+
 ```bash
 swift test
 ```
 
-## Docker image publishing
+## Docker
 
-This repository publishes the backend container to GitHub Container Registry using the workflow at `.github/workflows/docker-publish.yml`.
+### Published Image
+
+The backend container is published to GitHub Container Registry through the workflow at `.github/workflows/docker-publish.yml`.
 
 - Default image: `ghcr.io/rajeshm20/studentappbackend:latest`
-- Additional tags: `main`, git tags like `v1.0.0`, and commit SHA tags
+- Additional tags: `main`, release tags such as `v1.0.0`, and commit SHA tags
 
-To trigger a publish:
+To publish from CI:
 
 ```bash
 git push origin main
 ```
 
-Or create a versioned image tag:
+To publish a versioned image:
 
 ```bash
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-### See more
+### Complete Packaged Setup
 
-- [Vapor Website](https://vapor.codes)
-- [Vapor Documentation](https://docs.vapor.codes)
-- [Vapor GitHub](https://github.com/vapor)
-- [Vapor Community](https://github.com/vapor-community)
-
-
-## Complete Docker package
-
-The published image `ghcr.io/rajeshm20/studentappbackend:latest` contains only the backend application.
-To run a complete workable package with MySQL, use [docker-compose.package.yml](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.package.yml).
+The published image contains only the backend application. To run the backend together with MySQL, use [`docker-compose.package.yml`](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.package.yml).
 
 ```bash
 docker compose -f docker-compose.package.yml up -d
 ```
 
-That package starts:
+This package starts:
 
 - `ghcr.io/rajeshm20/studentappbackend:latest`
 - `mysql:8`
 
-The package uses MySQL root by default:
+Default database-related values:
 
 - `DATABASE_USER=root`
 - `DATABASE_PASSWORD=newpassword`
 - `MYSQL_ROOT_PASSWORD=newpassword`
 - `MYSQL_ROOT_HOST=%`
 
-For local source-based development, [docker-compose.yml](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.yml) does the same but builds the backend image from this repo.
+For local development from source, use [`docker-compose.yml`](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.yml). It provides the same runtime shape but builds the backend image from this repository.
 
-If you already started MySQL with older credentials or host permissions, recreate the volume once so MySQL can initialize with the updated root access:
+If MySQL was previously started with older credentials or host permissions, recreate the volume once:
 
 ```bash
 docker compose -f docker-compose.package.yml down -v
 docker compose -f docker-compose.package.yml up -d
 ```
 
-After the package is running, try the endpoints below.
+## API Endpoints
 
-Docker package endpoints use HTTP:
+### REST
 
-SignUp
+Base URL for the packaged Docker setup:
+
+```text
+http://localhost:8080
+```
+
+#### Signup
+
 ```bash
 curl -X POST http://localhost:8080/auth/signup \
   -H "Content-Type: application/json" \
-  -d '{"name":"SasvathRN", "email": "sasvathrn@rnss.com", "password":"password123"}'
+  -d '{
+    "name": "SasvathRN",
+    "email": "sasvathrn@rnss.com",
+    "password": "password123"
+  }'
 ```
 
-Login
+#### Login
+
 ```bash
 curl -X POST http://localhost:8080/auth/login \
   -H "Content-Type: application/json" \
@@ -98,31 +154,29 @@ curl -X POST http://localhost:8080/auth/login \
   }'
 ```
 
-## HTTPS with Caddy
+### GraphQL
 
-To run the same backend image behind Caddy with HTTPS termination, use [docker-compose.caddy.yml](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.caddy.yml).
+GraphQL is exposed at:
 
-```bash
-docker compose -f docker-compose.caddy.yml up -d
+```text
+POST /graphql
 ```
 
-This keeps the app container on HTTP only and lets Caddy handle HTTPS on port `443`.
-For local testing with Caddy's internal CA, use `https://localhost` and allow the temporary certificate in your client if needed.
+GraphiQL is available at:
 
-## GraphQL
+```text
+GET /graphiql
+```
 
-This project now exposes GraphQL at `POST /graphql` alongside the existing REST auth APIs.
-
-Available operations in the first schema:
+Current GraphQL operations:
 
 - `students`: fetch all students
-- `student(id: UUID!)`: fetch one student
+- `student(id: UUID!)`: fetch a single student
 - `signup(input: StudentGraphQLCreateInput!)`: create a student
-- `login(input: StudentGraphQLLoginInput!)`: authenticate and receive a JWT
+- `login(input: StudentGraphQLLoginInput!)`: authenticate and return a JWT
 
-GraphiQL playground is available at `GET /graphiql`.
+#### Signup Mutation
 
-Signup mutation:
 ```bash
 curl -X POST http://localhost:8080/graphql \
   -H "Content-Type: application/json" \
@@ -138,7 +192,8 @@ curl -X POST http://localhost:8080/graphql \
   }'
 ```
 
-Login mutation:
+#### Login Mutation
+
 ```bash
 curl -X POST http://localhost:8080/graphql \
   -H "Content-Type: application/json" \
@@ -153,7 +208,8 @@ curl -X POST http://localhost:8080/graphql \
   }'
 ```
 
-Students query:
+#### Students Query
+
 ```bash
 curl -X POST http://localhost:8080/graphql \
   -H "Content-Type: application/json" \
@@ -161,134 +217,121 @@ curl -X POST http://localhost:8080/graphql \
     "query": "{ students { id name email phoneNumber dob } }"
   }'
 ```
-query All studends Data:
+
+Minimal students query:
+
+```bash
 curl -X POST http://localhost:8080/graphql \
   -H "Content-Type: application/json" \
-  -d '{"query": "{ students { id name email } }"}'
-
-Response:
-{"data":{"students":[{"name":"Nisha R K","email":"nishark@rnss.com","id":"0722684C-2EE2-4659-9968-559EFB9D831D"},{"name":"Sasvath R N","email":"sasavathrn@iitm.com","id":"09C99B17-C79F-46E2-823A-36BC36E0EC3F"},{"name":"Rajesh Mani","email":"rajeshm@graphql.com","id":"1AA4ADC1-8DBF-4D98-B00D-20EBDFD2E61E"},{"name":"HarithS","email":"harith@rnss.com","id":"231E8EE8-CA7B-400E-ADD9-6A35A38E3509"},{"name":"Rajesh","email":"rajesh@example.com","id":"309CBFDD-8B61-4D0C-A559-01A512DDC0BE"},{"name":"Graph User","email":"graphql@example.com","id":"33A6F8BD-2BB3-4C30-996A-DBDD95D39B6B"},{"name":"Saraswathy Mani","email":"saraswathy@rnss.com","id":"72C3D42B-BF45-4894-BD91-CCA5BAB526C6"},{"name":"Rajesh M","email":"rajeshmani@graphql.com","id":"7E254A89-2936-43CC-8860-A3F501F3BED1"},{"name":"SasvathRN","email":"sasvathrn@rnss.com","id":"964638F5-9B71-4A20-B638-05D859A910F6"},{"name":"Graph User","email":"graphql@graphql.com","id":"B1A1F06B-65B1-40AE-9FA0-4C3EBAED920E"},{"name":"Karthick Mani","email":"karthickmani@graphql.com","id":"B471EDCA-5904-4CE2-94A3-B86B7848184B"},{"name":"ShashanthRN","email":"shashanthrn@rnss.com","id":"D7B43550-17A2-4BFD-B87C-D924DF23ED9A"}]}}
-
-Update student detail query:
-curl -X POST http://localhost:8080/graphql \
-  -H "Content-Type: application/json" \
-  -d '{                                           
-    "query": "mutation UpdateDob($input: StudentGraphQLUpdateInput!) { updateStudent(input: $input) { id name dob } }",
-    "variables": {
-      "input": {
-        "id": "964638F5-9B71-4A20-B638-05D859A910F6",
-        "dob": 286820400
-      }
-    }
+  -d '{
+    "query": "{ students { id name email } }"
   }'
-  
-Response:
-{"data":{"updateStudent":{"id":"964638F5-9B71-4A20-B638-05D859A910F6","name":"SasvathRN","dob":286820400}}}%    
+```
 
-## Installing and configuring MySQL on a Mac using Homebrew is a straightforward process. Here's a step-by-step guide:
+Note: if you add schema fields such as `updateStudent`, document them here only after they are implemented in the current codebase.
 
-1. Install MySQL
+## HTTPS
 
+### Native Local HTTPS
 
-Update Homebrew: First, make sure Homebrew is up to date by running the following command in your terminal:
+If running the Vapor app directly and you want local HTTPS, generate a self-signed certificate with `CN=localhost`.
+
+1. Generate the certificate and key.
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout key.pem -out cert.pem -days 365 \
+  -subj "/CN=localhost"
+```
+
+2. Export a `.p12` bundle if needed.
+
+```bash
+openssl pkcs12 -export -out localhost.p12 \
+  -inkey key.pem -in cert.pem \
+  -name "Vapor Localhost Cert"
+```
+
+3. Import `cert.pem` into macOS Keychain and set it to trust for local use.
+4. Restart the Vapor application so it reloads the certificates.
+5. Test the endpoint again.
+
+```bash
+curl https://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"rajesh@example.com","password":"password123"}'
+```
+
+### HTTPS with Caddy
+
+To run the backend behind Caddy with TLS termination, use [`docker-compose.caddy.yml`](/Users/omnamorajesh/Documents/2026/SchoolApp_fullstack_swift/StudentAppBackend/docker-compose.caddy.yml).
+
+```bash
+docker compose -f docker-compose.caddy.yml up -d
+```
+
+This keeps the backend container on HTTP and lets Caddy manage HTTPS on port `443`.
+
+For local Caddy testing, use:
+
+```text
+https://localhost
+```
+
+## MySQL Setup on macOS
+
+If you are not using Docker, install and configure MySQL locally.
+
+### Install
 
 ```bash
 brew update
-```
-Install MySQL: Next, install MySQL using the brew install command:
-
-```bash
 brew install mysql
 ```
-This will download and install the latest stable version of MySQL.
 
-2. Configure MySQL
+### Start
 
-After the installation is complete, you'll need to start and secure your MySQL server.
-
-Start the MySQL Service: You can start the MySQL server as a background service. There are a couple of ways to do this:
-
-Start it immediately and have it launch at startup:
+Start MySQL as a background service:
 
 ```bash
 brew services start mysql
 ```
-Start it manually each time you want to use it:
+
+Or start it manually when needed:
 
 ```bash
 mysql.server start
 ```
-You can check the status of the service at any time with brew services list.
 
-Secure the Installation: It's crucial to run the security script to set a root password, remove anonymous users, and disable remote root login. Run the following command:
+### Secure the Installation
 
 ```bash
 mysql_secure_installation
 ```
-You'll be prompted to follow a series of steps:
 
-Validate Password Component: You can choose to enable or disable this. It enforces strong password policies.
+Recommended actions during setup:
 
-Set the root password: This is a critical step. Choose a strong password.
+- Set a root password
+- Remove anonymous users
+- Disallow remote root login unless explicitly required
+- Remove the test database
+- Reload privilege tables
 
-Remove anonymous users: Type Y to remove them.
-
-Disallow root login remotely: Type Y to prevent remote access for the root user.
-
-Remove test database: Type Y to remove the default 'test' database.
-
-Reload privilege tables: Type Y to apply all the changes.
-
-3. Connect to MySQL
-
-Once MySQL is installed and configured, you can connect to it from your terminal.
-
-Connect to the MySQL server: Use the following command and enter the root password you set during the security configuration.
+### Connect
 
 ```bash
- mysql -u root -p -h 127.0.0.1 -P 3306
+mysql -u root -p -h 127.0.0.1 -P 3306
 ```
-The -u flag specifies the user (root), and the -p flag prompts for the password.
 
-Verify the connection: If successful, you'll see the MySQL prompt, where you can start executing SQL commands. To exit, type exit; and press Enter.
+## Deployment Notes
 
-To Enable https
-You need to re-generate the cert with CN=localhost:
+- In Docker or production environments, keep the app container on HTTP.
+- Terminate TLS in Caddy, Nginx, or another reverse proxy.
+- Do not package local self-signed certificates into production images.
 
-    1. Generate a self-signed cert with CN=localhost.
-    ```
-    openssl req -x509 -newkey rsa:2048 -nodes \
-    -keyout key.pem -out cert.pem -days 365 \
-    -subj "/CN=localhost"
-    ```
-  Then rebuild the .p12:
-    ```
-  openssl pkcs12 -export -out localhost.p12 \
-  -inkey key.pem -in cert.pem \
-  -name "Vapor Localhost Cert"
-      ```
-  
-    2.    Import it into macOS Keychain:
-    
-        Open Keychain Access
-    •    Drag cert.pem in
-    •    Double-click → expand Trust → set “Always Trust”
-    
-    3.    Restart your Vapor app so it reloads certs
-  
-    4.    Test again after https enabled in native local development.
+## References
 
-    curl https://localhost:8080/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"rajesh@example.com","password":"password123"}'
-
-    Now it should work without -k.
-    
-    
-🚀 For Docker / Deployment
-
-    •    If you’re deploying inside Docker on a real server, keep the app container on HTTP.
-    •    Terminate TLS in Caddy or Nginx in front of the app.
-    •    Avoid baking local self-signed certs into the backend image.
-    
-    
+- [Vapor Website](https://vapor.codes)
+- [Vapor Documentation](https://docs.vapor.codes)
+- [Vapor GitHub](https://github.com/vapor)
+- [Vapor Community](https://github.com/vapor-community)
