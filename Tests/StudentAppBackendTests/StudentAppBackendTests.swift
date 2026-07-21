@@ -108,6 +108,47 @@ struct StudentAppBackendTests {
         }
     }
 
+    @Test("Test Logout Requires Authorization Header")
+    func testLogoutRequiresAuth() async throws {
+        try await withApp { app in
+            try await app.testing().test(.POST, "auth/logout", afterResponse: { res async in
+                #expect(res.status == .unauthorized)
+            })
+        }
+    }
+
+    @Test("Test Logout Token Cannot Be Reused")
+    func testLogoutRevokedToken() async throws {
+        try await withApp { app in
+            let signupPayload = ["name": "Karthick", "email": "karthickt@example.com", "password": "secret123"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(signupPayload)
+            })
+
+            var token: String = ""
+            let loginPayload = ["email": "karthickt@example.com", "password": "secret123"]
+            try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
+                try req.content.encode(loginPayload)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let loginResponse = try res.content.decode(LoginResponse.self)
+                token = loginResponse.token.token
+            })
+
+            try await app.testing().test(.POST, "auth/logout", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+            })
+
+            try await app.testing().test(.POST, "auth/logout", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .unauthorized)
+            })
+        }
+    }
+
     @Test("Test GraphQL Signup Mutation")
     func testGraphQLSignup() async throws {
         try await withApp { app in
