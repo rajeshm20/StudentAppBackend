@@ -1,4 +1,4 @@
-// MARK: - configure.swift
+    // MARK: - configure.swift
 import Vapor
 import Fluent
 import SQLKit
@@ -12,7 +12,7 @@ private func shouldEnableTLS(certPath: String, keyPath: String) -> Bool {
     let flag = Environment.get("ENABLE_HTTPS")?.lowercased()
     let tlsRequested = flag == "1" || flag == "true" || flag == "yes"
     let hasTLSFiles = FileManager.default.fileExists(atPath: certPath)
-        && FileManager.default.fileExists(atPath: keyPath)
+    && FileManager.default.fileExists(atPath: keyPath)
     return tlsRequested && hasTLSFiles
 }
 
@@ -32,43 +32,32 @@ public func configure(_ app: Application) throws {
                     return tls
                 }()
             ), as: .mysql)
-            // 🔹 Create CORS configuration
+                // 🔹 Create CORS configuration
             let corsConfig = CORSMiddleware.Configuration(
                 allowedOrigin: .custom("https://studentapp.ddns.net"), // 👈 restrict to your frontend
                 allowedMethods: [.GET, .POST, .PUT, .DELETE, .OPTIONS],
                 allowedHeaders: [.accept, .authorization, .contentType, .origin, .xRequestedWith],
                 allowCredentials: true
             )
-            // 🔹 Build the middleware from config
+                // 🔹 Build the middleware from config
             let cors = CORSMiddleware(configuration: corsConfig)
-            // 🔹 Register middleware in correct order
+                // 🔹 Register middleware in correct order
             app.middleware.use(cors)                        // CORS first
             app.middleware.use(SecurityHeadersMiddleware()) // Your custom headers
             app.middleware.use(RateLimiterMiddleware())     // Rate limiting
             app.jwt.signers.use(.hs256(key: "your-secret-key".data(using: .utf8)!))
-            // Add migrations
+                // Add migrations
             app.migrations.add(CreateStudent())
             try app.autoMigrate().wait()
-        
-            let certPath = Environment.get("TLS_CERT") ?? "certs/cert.pem"
-            let keyPath  = Environment.get("TLS_KEY")  ?? "certs/key.pem"
 
-            app.http.server.configuration.hostname = "127.0.0.1"
-            app.http.server.configuration.port = 8443
-            
-            // Load certificates and private key (PEM) and use the non-deprecated API
-            let certChain = try NIOSSLCertificate.fromPEMFile(certPath).map { NIOSSLCertificateSource.certificate($0) }
-            // If your key is password-protected, use `NIOSSLPrivateKey(file: keyPath, format: .pem, password: "yourPassword")`
-            let nioPrivateKey = try NIOSSLPrivateKey(file: keyPath, format: .pem)
-            app.http.server.configuration.tlsConfiguration = TLSConfiguration.makeServerConfiguration(
-                certificateChain: certChain,
-                privateKey: .privateKey(nioPrivateKey)
-            )
-            print("PWD:", FileManager.default.currentDirectoryPath)
-            print("Cert:", certPath)
-            print("Key:", keyPath)
-            print("Cert exists:", FileManager.default.fileExists(atPath: certPath))
-            print("Key exists:", FileManager.default.fileExists(atPath: keyPath))
+                // Note: TLS is intentionally NOT configured here. certs/ is
+                // gitignored and won't exist in CI or on a fresh checkout, and
+                // the in-process test client (app.testable()) doesn't need a
+                // real TLS listener anyway. Loading certs unconditionally here
+                // previously threw `failedToLoadCertificate` and failed every
+                // test before it could even run. If you need TLS exercised in
+                // a specific test, guard it the same way the `default` case
+                // below does (shouldEnableTLS + do/catch) instead of `try`.
 
             try routes(app)
         default:
@@ -78,24 +67,24 @@ public func configure(_ app: Application) throws {
                 username: Environment.get("DATABASE_USER") ?? "root",
                 password: Environment.get("DATABASE_PASSWORD") ?? "newpassword",
                 database: Environment.get("DATABASE_NAME") ?? "student_db",
-    //            tlsConfiguration: .makeClientConfiguration()
+                //            tlsConfiguration: .makeClientConfiguration()
                 tlsConfiguration: {
                     var tls = TLSConfiguration.makeClientConfiguration()
                     tls.certificateVerification = .none
                     return tls
                 }()
             ), as: .mysql)
-            
-            // 🔹 Create CORS configuration
+
+                // 🔹 Create CORS configuration
             let corsConfig = CORSMiddleware.Configuration(
                 allowedOrigin: .custom("https://127.0.0.1:8080"), // 👈 restrict to your frontend
                 allowedMethods: [.GET, .POST, .PUT, .DELETE, .OPTIONS],
                 allowedHeaders: [.accept, .authorization, .contentType, .origin, .xRequestedWith],
                 allowCredentials: true
             )
-            // 🔹 Build the middleware from config
+                // 🔹 Build the middleware from config
             let cors = CORSMiddleware(configuration: corsConfig)
-            // 🔹 Register middleware in correct order
+                // 🔹 Register middleware in correct order
             app.middleware.use(cors)                        // CORS first
             app.middleware.use(SecurityHeadersMiddleware()) // Your custom headers
             app.middleware.use(RateLimiterMiddleware())     // Rate limiting
@@ -107,49 +96,49 @@ public func configure(_ app: Application) throws {
             }
             print("---- END ENV ----")
 
-            // Example: Access a specific one
+                // Example: Access a specific one
             if let dbUser = Environment.get("DATABASE_USER") {
                 print("DATABASE_USER is \(dbUser)")
             } else {
                 print("DATABASE_USER not found")
             }
 #endif
-        // Certificates path has been set in Edit Scheme -> RUN -> Arguments, if any change of folders or path should be changed here too.
-        let certPath = Environment.get("TLS_CERT") ?? "certs/cert.pem"
-        let keyPath  = Environment.get("TLS_KEY")  ?? "certs/key.pem"
-        let tlsEnabled = shouldEnableTLS(certPath: certPath, keyPath: keyPath)
+                // Certificates path has been set in Edit Scheme -> RUN -> Arguments, if any change of folders or path should be changed here too.
+            let certPath = Environment.get("TLS_CERT") ?? "certs/cert.pem"
+            let keyPath  = Environment.get("TLS_KEY")  ?? "certs/key.pem"
+            let tlsEnabled = shouldEnableTLS(certPath: certPath, keyPath: keyPath)
 
-        print("PWD:", FileManager.default.currentDirectoryPath)
-        print("Cert path:", certPath)
-        print("Key path:", keyPath)
-        print("Cert exists:", FileManager.default.fileExists(atPath: certPath))
-        print("Key exists:", FileManager.default.fileExists(atPath: keyPath))
+            print("PWD:", FileManager.default.currentDirectoryPath)
+            print("Cert path:", certPath)
+            print("Key path:", keyPath)
+            print("Cert exists:", FileManager.default.fileExists(atPath: certPath))
+            print("Key exists:", FileManager.default.fileExists(atPath: keyPath))
 
-        if tlsEnabled {
-            do {
-                let certs = try NIOSSLCertificate.fromPEMFile(certPath).map { NIOSSLCertificateSource.certificate($0) }
-                let nioPrivateKey = try NIOSSLPrivateKey(file: keyPath, format: .pem)
-                let tls = TLSConfiguration.makeServerConfiguration(
-                    certificateChain: certs,
-                    privateKey: .privateKey(nioPrivateKey)
-                )
-                app.http.server.configuration.tlsConfiguration = tls
-                print("Loaded \(certs.count) certificate(s)")
-            } catch {
-                app.logger.warning("TLS certificates could not be loaded. Continuing without HTTPS: \(error)")
+            if tlsEnabled {
+                do {
+                    let certs = try NIOSSLCertificate.fromPEMFile(certPath).map { NIOSSLCertificateSource.certificate($0) }
+                    let nioPrivateKey = try NIOSSLPrivateKey(file: keyPath, format: .pem)
+                    let tls = TLSConfiguration.makeServerConfiguration(
+                        certificateChain: certs,
+                        privateKey: .privateKey(nioPrivateKey)
+                    )
+                    app.http.server.configuration.tlsConfiguration = tls
+                    print("Loaded \(certs.count) certificate(s)")
+                } catch {
+                    app.logger.warning("TLS certificates could not be loaded. Continuing without HTTPS: \(error)")
+                }
+            } else {
+                app.logger.notice("HTTPS disabled. Starting server on HTTP.")
             }
-        } else {
-            app.logger.notice("HTTPS disabled. Starting server on HTTP.")
-        }
 
-        // JWT setup
-        app.jwt.signers.use(.hs256(key: "your-secret-key".data(using: .utf8)!))
-        // Add migrations
-        app.migrations.add(CreateStudent())
-        try app.autoMigrate().wait()
-        try routes(app)
+                // JWT setup
+            app.jwt.signers.use(.hs256(key: "your-secret-key".data(using: .utf8)!))
+                // Add migrations
+            app.migrations.add(CreateStudent())
+            try app.autoMigrate().wait()
+            try routes(app)
 
-        }
+    }
 
 }
 #if DEBUG
