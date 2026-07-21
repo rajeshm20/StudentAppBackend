@@ -1,16 +1,22 @@
-# This workflow will build a Swift project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-swift
-
-name: Swift
+# Replaces .github/workflows/swift.yml and .github/workflows/docker-publish.yml
+# Test job must pass before the Docker image is built and pushed to GHCR.
+name: CI/CD
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
+    tags: ["v*"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/studentappbackend
 
 jobs:
-  build:
+  test:
+    name: Build & Test
     runs-on: ubuntu-latest
     container:
       image: swift:6.0-noble
@@ -35,8 +41,71 @@ jobs:
       DATABASE_NAME: student_db
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: swift build -v
-    - name: Run tests
-      run: swift test -v
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Speeds up repeat runs: only re-resolves/rebuilds deps when
+      # Package.resolved changes instead of every single run.
+      - name: Cache Swift build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: swift-build-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            swift-build-${{ runner.os }}-
+
+      - name: Build
+        run: swift build -v
+
+      - name: Run tests
+        run: swift test -v
+
+  publish:
+    name: Build & Push Docker Image
+    needs: test
+    # Only runs after tests pass, and only for pushes/tags/manual runs —
+    # never for pull requests. This is the fix for the main gap: previously
+    # this job had no dependency on the test job at all.
+    if: needs.test.result == 'success' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,prefix=sha-
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # GitHub Actions cache backend for Docker layer caching —
+          # avoids re-downloading/recompiling unchanged layers every push.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
