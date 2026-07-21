@@ -1,3 +1,181 @@
+# StudentAppBackend -- Run on WSL with Docker
+
+## Prerequisites
+
+-   Windows 11 with WSL2 (Ubuntu)
+-   Docker installed and running
+-   Git
+-   Ports:
+    -   MySQL: 3306 (or update as needed)
+    -   App: use 8081 on host if 8080 is occupied by Jenkins
+
+## 1. Clone the repository
+
+``` bash
+git clone https://github.com/rajeshm20/StudentAppBackend.git
+cd StudentAppBackend
+```
+
+Verify the project contains:
+
+``` bash
+ls
+```
+
+Expected:
+
+-   Dockerfile
+-   Package.swift
+-   Sources/
+
+## 2. Build the Docker image (AMD64)
+
+``` bash
+docker buildx create --use --name mybuilder
+docker buildx inspect --bootstrap
+```
+
+Build:
+
+``` bash
+docker buildx build \
+  --platform linux/amd64 \
+  -t studentappbackend:local \
+  --load .
+```
+
+> This Dockerfile already builds Swift inside the container
+> (`FROM swift:6.0-noble`), so **Swift does not need to be installed in
+> WSL**.
+
+## 3. Start MySQL
+
+If using Docker Compose:
+
+``` bash
+docker compose up -d db
+```
+
+or start your MySQL container before the backend.
+
+Verify:
+
+``` bash
+docker ps
+```
+
+## 4. Run the backend
+
+If 8080 is already used (for example by Jenkins), map another host port:
+
+``` bash
+docker run -p 8081:8080 studentappbackend:local
+```
+
+Open:
+
+http://localhost:8081
+
+## 5. Common issues
+
+### ARM64 image on AMD64
+
+Error:
+
+``` text
+exec ./StudentAppBackend: exec format error
+```
+
+Cause: - Image built on Apple Silicon (ARM64).
+
+Fix: - Rebuild in WSL using:
+
+``` bash
+docker buildx build \
+  --platform linux/amd64 \
+  -t studentappbackend:local \
+  --load .
+```
+
+### Port already in use
+
+Check:
+
+``` bash
+sudo ss -tulpn | grep :8080
+```
+
+Run on another host port:
+
+``` bash
+docker run -p 8081:8080 studentappbackend:local
+```
+
+### MySQL connection refused
+
+Ensure MySQL container is running:
+
+``` bash
+docker ps
+```
+
+If using Docker Compose, start the full stack:
+
+``` bash
+docker compose up -d
+```
+
+## 6. Create a Git branch
+
+``` bash
+git checkout -b wsl_studentappbackend
+git add .
+git commit -m "Build and configure StudentAppBackend for WSL"
+git push -u origin wsl_studentappbackend
+```
+
+> GitHub no longer accepts account passwords for Git operations. Use SSH
+> or a Personal Access Token.
+
+## 7. Publish a Docker image to GHCR
+
+Tag:
+
+``` bash
+docker tag studentappbackend:local ghcr.io/rajeshm20/studentappbackend:wsl-v1
+```
+
+Login:
+
+``` bash
+docker login ghcr.io -u rajeshm20
+```
+
+Use a GitHub Personal Access Token (Classic) with:
+
+-   read:packages
+-   write:packages
+-   repo (if repository is private)
+
+Push:
+
+``` bash
+docker push ghcr.io/rajeshm20/studentappbackend:wsl-v1
+```
+
+## Useful commands
+
+``` bash
+docker images
+docker ps
+docker logs <container>
+docker image inspect studentappbackend:local
+docker buildx ls
+docker network ls
+```
+
+--------------------------------------------------------------------------------
+
 # StudentAppBackend
 
 Vapor-based Swift backend that exposes student authentication APIs over REST and additional student APIs over GraphQL.

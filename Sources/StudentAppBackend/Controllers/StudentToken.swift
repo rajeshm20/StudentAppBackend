@@ -11,6 +11,7 @@ import Foundation
 struct StudentToken: JWTPayload {
     var exp: ExpirationClaim
     var studentID: UUID
+    var jti: IDClaim
 
     func verify(using signer: JWTSigner) throws {
         try self.exp.verifyNotExpired()

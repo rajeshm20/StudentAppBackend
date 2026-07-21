@@ -80,6 +80,34 @@ struct StudentAppBackendTests {
         }
     }
 
+    @Test("Test Logout Route")
+    func testLogout() async throws {
+        try await withApp { app in
+            let signupPayload = ["name": "Karthick", "email": "karthickt@example.com", "password": "secret123"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(signupPayload)
+            })
+
+            var token: String = ""
+            let loginPayload = ["email": "karthickt@example.com", "password": "secret123"]
+            try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
+                try req.content.encode(loginPayload)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let loginResponse = try res.content.decode(LoginResponse.self)
+                token = loginResponse.token.token
+            })
+
+            try await app.testing().test(.POST, "auth/logout", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let logoutResponse = try res.content.decode(LogoutResponse.self)
+                #expect(logoutResponse.message == "Logout successful")
+            })
+        }
+    }
+
     @Test("Test GraphQL Signup Mutation")
     func testGraphQLSignup() async throws {
         try await withApp { app in
@@ -165,4 +193,8 @@ struct GraphQLSignupInput: Content {
     let name: String
     let email: String
     let password: String
+}
+
+struct LogoutResponse: Content {
+    let message: String
 }
