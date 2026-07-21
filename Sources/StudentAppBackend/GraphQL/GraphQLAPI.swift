@@ -73,7 +73,7 @@ struct GraphQLResolver {
             }
 
             let expiration = ExpirationClaim(value: Date(timeIntervalSinceNow: 60))
-            let payload = StudentToken(exp: expiration, studentID: try student.requireID())
+            let payload = StudentToken(exp: expiration, studentID: try student.requireID(), jti: IDClaim(value: UUID().uuidString))
             let token = try request.jwt.sign(payload)
 
             return AuthPayload(user: student.convertToPublic(), token: token)

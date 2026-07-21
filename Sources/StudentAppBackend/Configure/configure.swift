@@ -48,6 +48,7 @@ public func configure(_ app: Application) throws {
             app.jwt.signers.use(.hs256(key: "your-secret-key".data(using: .utf8)!))
                 // Add migrations
             app.migrations.add(CreateStudent())
+            app.migrations.add(CreateRevokedToken())
             try app.autoMigrate().wait()
 
                 // Note: TLS is intentionally NOT configured here. certs/ is
@@ -131,12 +132,13 @@ public func configure(_ app: Application) throws {
                 app.logger.notice("HTTPS disabled. Starting server on HTTP.")
             }
 
-                // JWT setup
-            app.jwt.signers.use(.hs256(key: "your-secret-key".data(using: .utf8)!))
-                // Add migrations
-            app.migrations.add(CreateStudent())
-            try app.autoMigrate().wait()
-            try routes(app)
+        // JWT setup
+        app.jwt.signers.use(.hs256(key: "your-secret-key".data(using: .utf8)!))
+        // Add migrations
+        app.migrations.add(CreateStudent())
+        app.migrations.add(CreateRevokedToken())
+        try app.autoMigrate().wait()
+        try routes(app)
 
     }
 
