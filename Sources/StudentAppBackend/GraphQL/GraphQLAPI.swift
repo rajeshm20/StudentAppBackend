@@ -38,22 +38,30 @@ struct GraphQLResolver {
 
     func signup(request: Request, arguments: SignupArguments) throws -> EventLoopFuture<Student.Public> {
         request.eventLoop.makeFutureWithTask {
-            let create = Student.CreateRequest(
-                name: arguments.input.name,
-                email: arguments.input.email,
-                password: arguments.input.password,
-                dob: arguments.input.dob,
-                phoneNumber: arguments.input.phoneNumber
-            )
+            let input = arguments.input
 
-            let hashedPassword = try Bcrypt.hash(create.password)
+            // Run validation checks
+            let validationErrors = validateStudentCreateRequest(
+                name: input.name,
+                email: input.email,
+                password: input.password,
+                dob: input.dob,
+                phoneNumber: input.phoneNumber
+            )
+            
+            if !validationErrors.isEmpty {
+                let errorMessages = validationErrors.map { "\($0.field): \($0.message)" }.joined(separator: "; ")
+                throw Abort(.badRequest, reason: "Validation failed: \(errorMessages)")
+            }
+
+            let hashedPassword = try Bcrypt.hash(input.password)
             let student = Student(
                 id: UUID(),
-                name: create.name,
-                email: create.email,
+                name: input.name,
+                email: input.email,
                 passwordHash: hashedPassword,
-                dob: create.dob,
-                phoneNumber: create.phoneNumber
+                dob: input.dob,
+                phoneNumber: input.phoneNumber
             )
 
             try await student.save(on: request.db)
@@ -88,8 +96,28 @@ struct GraphQLResolver {
             throw Abort(.notFound, reason: "Student not found")
         }
 
+        // Validate update input
+        let validationErrors = validateStudentUpdateRequest(
+            dob: arguments.input.dob,
+            name: arguments.input.name,
+            phoneNumber: arguments.input.phoneNumber
+        )
+        
+        if !validationErrors.isEmpty {
+            let errorMessages = validationErrors.map { "\($0.field): \($0.message)" }.joined(separator: "; ")
+            throw Abort(.badRequest, reason: "Validation failed: \(errorMessages)")
+        }
+
         if let dob = arguments.input.dob {
             student.dob = dob
+        }
+        
+        if let name = arguments.input.name {
+            student.name = name
+        }
+        
+        if let phoneNumber = arguments.input.phoneNumber {
+            student.phoneNumber = phoneNumber
         }
 
         try await student.save(on: context.db)
@@ -182,6 +210,8 @@ enum StudentGraphQLSchema {
             Input(StudentGraphQLUpdateInput.self) {
                 InputField("id", at: \.id)
                 InputField("dob", at: \.dob)
+                InputField("name", at: \.name)
+                InputField("phoneNumber", at: \.phoneNumber)
             }
 
 
