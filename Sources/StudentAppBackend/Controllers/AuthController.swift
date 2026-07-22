@@ -22,6 +22,23 @@ struct AuthController: RouteCollection {
     
     func signup(_ req: Request) async throws -> Student.Public {
         let create = try req.content.decode(Student.CreateRequest.self)
+        
+        // Run Vapor's automatic validations
+        try Student.CreateRequest.validate(content: req)
+        
+        // Run additional validation checks not covered by Vapor validators
+        let validationErrors = validateStudentCreateRequest(
+            name: create.name,
+            email: create.email,
+            password: create.password,
+            dob: create.dob,
+            phoneNumber: create.phoneNumber
+        )
+        
+        if !validationErrors.isEmpty {
+            let errorMessages = validationErrors.map { "\($0.field): \($0.message)" }.joined(separator: "; ")
+            throw Abort(.badRequest, reason: "Validation failed: \(errorMessages)")
+        }
 
         let hashedPassword = try Bcrypt.hash(create.password)
 

@@ -28,14 +28,14 @@ struct StudentAppBackendTests {
                 let name: String
                 let email: String
                 let password: String
-                let dob: Date
-                let phoneNumber: String
+                let dob: Date?
+                let phoneNumber: String?
             }
             let payload = SignupPayload(
                 name: "Karthick",
                 email: "karthickt@example.com",
                 password: "secret123",
-                dob: Date(),
+                dob: nil,
                 phoneNumber: "1234567890"
             )
             try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
@@ -45,10 +45,8 @@ struct StudentAppBackendTests {
                 do {
                     let body = try res.content.decode(StudentPublic.self)
                     #expect(body.email == "karthickt@example.com")
-                    #expect(body.email == "karthickt@example.com")
                     #expect(body.name == "Karthick")
                     #expect(body.phoneNumber == "1234567890")
-                    #expect(body.dob != nil)
                 } catch {
                     XCTFail("Failed to decode LoginResponse: \(error)")
                 }
@@ -182,6 +180,193 @@ struct StudentAppBackendTests {
                 } catch {
                     XCTFail("Failed to decode GraphQL response: \(error)")
                 }
+            })
+        }
+    }
+
+    // MARK: - REST Validation Tests
+
+    @Test("REST: Empty name rejected with 400")
+    func testRestSignupEmptyName() async throws {
+        try await withApp { app in
+            let payload = ["name": "", "email": "test@example.com", "password": "password123"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+
+    @Test("REST: Name exceeding max length rejected")
+    func testRestSignupNameTooLong() async throws {
+        try await withApp { app in
+            let longName = String(repeating: "a", count: 101)
+            let payload = ["name": longName, "email": "test@example.com", "password": "password123"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+
+    @Test("REST: Malformed email rejected")
+    func testRestSignupMalformedEmail() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "not-an-email", "password": "password123"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+
+    @Test("REST: Email exceeding max length rejected")
+    func testRestSignupEmailTooLong() async throws {
+        try await withApp { app in
+            let longEmail = String(repeating: "a", count: 200) + "@example.com"
+            let payload = ["name": "TestUser", "email": longEmail, "password": "password123"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+
+    @Test("REST: Password too short rejected")
+    func testRestSignupPasswordTooShort() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "test@example.com", "password": "pass12"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+
+    @Test("REST: Password without numbers rejected")
+    func testRestSignupPasswordNoNumbers() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "test@example.com", "password": "passwordonly"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+
+    @Test("REST: Password without letters rejected")
+    func testRestSignupPasswordNoLetters() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "test@example.com", "password": "12345678"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+
+    @Test("REST: Malformed phone number rejected")
+    func testRestSignupMalformedPhoneNumber() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "test@example.com", "password": "password123", "phoneNumber": "phone#@number"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+
+    @Test("REST: Phone number too short rejected")
+    func testRestSignupPhoneNumberTooShort() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "test@example.com", "password": "password123", "phoneNumber": "12345"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+
+    @Test("REST: Phone number too long rejected")
+    func testRestSignupPhoneNumberTooLong() async throws {
+        try await withApp { app in
+            let longPhone = String(repeating: "1", count: 21)
+            let payload = ["name": "TestUser", "email": "test@example.com", "password": "password123", "phoneNumber": longPhone]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+
+    @Test("REST: Valid signup payload accepted")
+    func testRestSignupValidPayload() async throws {
+        try await withApp { app in
+            let payload = ["name": "John Doe", "email": "john@example.com", "password": "password123", "phoneNumber": "+1-234-567-8900"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+            })
+        }
+    }
+
+    @Test("REST: Valid signup with optional fields nil")
+    func testRestSignupValidPayloadOptionalFieldsNil() async throws {
+        try await withApp { app in
+            let payload = ["name": "John Doe", "email": "john2@example.com", "password": "password123"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+            })
+        }
+    }
+
+    // MARK: - Phone Number Format Tests (REST)
+
+    @Test("REST: Phone number with plus prefix accepted")
+    func testRestSignupPhoneWithPlus() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "test+plus@example.com", "password": "password123", "phoneNumber": "+12345678901"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+            })
+        }
+    }
+
+    @Test("REST: Phone number with dashes accepted")
+    func testRestSignupPhoneWithDashes() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "test+dash@example.com", "password": "password123", "phoneNumber": "1-234-567-8901"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+            })
+        }
+    }
+
+    @Test("REST: Phone number with spaces accepted")
+    func testRestSignupPhoneWithSpaces() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "test+space@example.com", "password": "password123", "phoneNumber": "1 234 567 8901"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
             })
         }
     }

@@ -69,4 +69,19 @@ extension Student {
         let dob: Date?
         let phoneNumber: String?
     }
+    
+    struct UpdateRequest: Content {
+        let dob: Date?
+        let name: String?
+        let phoneNumber: String?
+    }
+}
+
+// MARK: - Validations Extension
+extension Student.CreateRequest: Validatable {
+    static func validations(_ validations: inout Validations) {
+        validations.add("name", as: String.self, is: !.empty && .count(1...StudentValidationConstraints.nameMaxLength))
+        validations.add("email", as: String.self, is: .email && .count(...StudentValidationConstraints.emailMaxLength))
+        validations.add("password", as: String.self, is: .count(StudentValidationConstraints.passwordMinLength...))
+    }
 }
