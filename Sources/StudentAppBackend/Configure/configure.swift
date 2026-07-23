@@ -7,7 +7,21 @@ import JWTKit
 import JWT
 import Logging
 import NIOSSL
+extension Application {
+    private struct EmailServiceKey: StorageKey {
+        typealias Value = EmailSending
+    }
 
+    var emailService: any EmailSending {
+        get {
+            guard let service = storage[EmailServiceKey.self] else {
+                fatalError("EmailService not configured")
+            }
+            return service
+        }
+        set { storage[EmailServiceKey.self] = newValue }
+    }
+}
 private func shouldEnableTLS(certPath: String, keyPath: String) -> Bool {
     let flag = Environment.get("ENABLE_HTTPS")?.lowercased()
     let tlsRequested = flag == "1" || flag == "true" || flag == "yes"
@@ -28,13 +42,14 @@ public func configure(_ app: Application) throws {
                 database: Environment.get("DATABASE_NAME") ?? "student_db",
                 tlsConfiguration: {
                     var tls = TLSConfiguration.makeClientConfiguration()
-                    tls.certificateVerification = .none
+                    tls.certificateVerification = Environment.get("ENVIRONMENT") == "production" ? .fullVerification : .none
                     return tls
                 }()
             ), as: .mysql)
                 // 🔹 Create CORS configuration
+            let allowedOrigin = Environment.get("ALLOWED_ORIGIN") ?? "http://jenkins.local:8081"
             let corsConfig = CORSMiddleware.Configuration(
-                allowedOrigin: .custom("https://studentapp.ddns.net"), // 👈 restrict to your frontend
+                allowedOrigin: .custom("https://openedschool.com"), // 👈 restrict to your frontend
                 allowedMethods: [.GET, .POST, .PUT, .DELETE, .OPTIONS],
                 allowedHeaders: [.accept, .authorization, .contentType, .origin, .xRequestedWith],
                 allowCredentials: true
@@ -45,12 +60,26 @@ public func configure(_ app: Application) throws {
             app.middleware.use(cors)                        // CORS first
             app.middleware.use(SecurityHeadersMiddleware()) // Your custom headers
             app.middleware.use(RateLimiterMiddleware())     // Rate limiting
-            app.jwt.signers.use(.hs256(key: "your-secret-key".data(using: .utf8)!))
+            guard let jwtSecret = Environment.get("JWT_SECRET") else {
+                fatalError("JWT_SECRET environment variable is required")
+            }
+            app.jwt.signers.use(.hs256(key: jwtSecret.data(using: .utf8)!))
                 // Add migrations
             app.migrations.add(CreateStudent())
             app.migrations.add(CreateRevokedToken())
+            app.migrations.add(CreatePasswordResetToken())
             try app.autoMigrate().wait()
-
+                // In configure.swift
+                if let sendGridKey = Environment.get("SENDGRID_API_KEY") {
+                    app.emailService = SendGridEmailService(
+                        apiKey: sendGridKey,
+                        fromEmail: Environment.get("FROM_EMAIL") ?? "noreply@openedschool.com",
+                        httpClient: app.http.client.shared
+                    )
+                } else {
+                    app.logger.warning("SENDGRID_API_KEY not set — falling back to console email logging")
+                    app.emailService = ConsoleEmailService(logger: app.logger)
+                }
                 // Note: TLS is intentionally NOT configured here. certs/ is
                 // gitignored and won't exist in CI or on a fresh checkout, and
                 // the in-process test client (app.testable()) doesn't need a
@@ -71,14 +100,14 @@ public func configure(_ app: Application) throws {
                 //            tlsConfiguration: .makeClientConfiguration()
                 tlsConfiguration: {
                     var tls = TLSConfiguration.makeClientConfiguration()
-                    tls.certificateVerification = .none
+                    tls.certificateVerification = Environment.get("ENVIRONMENT") == "production" ? .fullVerification : .none
                     return tls
                 }()
             ), as: .mysql)
 
                 // 🔹 Create CORS configuration
             let corsConfig = CORSMiddleware.Configuration(
-                allowedOrigin: .custom("https://127.0.0.1:8080"), // 👈 restrict to your frontend
+                allowedOrigin: .custom(Environment.get("ALLOWED_ORIGIN") ?? "*"), // 👈 restrict to your frontend
                 allowedMethods: [.GET, .POST, .PUT, .DELETE, .OPTIONS],
                 allowedHeaders: [.accept, .authorization, .contentType, .origin, .xRequestedWith],
                 allowCredentials: true
@@ -89,21 +118,6 @@ public func configure(_ app: Application) throws {
             app.middleware.use(cors)                        // CORS first
             app.middleware.use(SecurityHeadersMiddleware()) // Your custom headers
             app.middleware.use(RateLimiterMiddleware())     // Rate limiting
-#if DEBUG
-
-            print("---- ENVIRONMENT VARIABLES ----")
-            for (key, value) in ProcessInfo.processInfo.environment {
-                print("\(key) = \(value)")
-            }
-            print("---- END ENV ----")
-
-                // Example: Access a specific one
-            if let dbUser = Environment.get("DATABASE_USER") {
-                print("DATABASE_USER is \(dbUser)")
-            } else {
-                print("DATABASE_USER not found")
-            }
-#endif
                 // Certificates path has been set in Edit Scheme -> RUN -> Arguments, if any change of folders or path should be changed here too.
             let certPath = Environment.get("TLS_CERT") ?? "certs/cert.pem"
             let keyPath  = Environment.get("TLS_KEY")  ?? "certs/key.pem"
@@ -132,11 +146,27 @@ public func configure(_ app: Application) throws {
                 app.logger.notice("HTTPS disabled. Starting server on HTTP.")
             }
 
+                // In configure.swift
+                if let sendGridKey = Environment.get("SENDGRID_API_KEY") {
+                    app.emailService = SendGridEmailService(
+                        apiKey: sendGridKey,
+                        fromEmail: Environment.get("FROM_EMAIL") ?? "noreply@openedschool.com",
+                        httpClient: app.http.client.shared
+                    )
+                } else {
+                    app.logger.warning("SENDGRID_API_KEY not set — falling back to console email logging")
+                    app.emailService = ConsoleEmailService(logger: app.logger)
+                }
+
         // JWT setup
-        app.jwt.signers.use(.hs256(key: "your-secret-key".data(using: .utf8)!))
+            guard let jwtSecret = Environment.get("JWT_SECRET") else {
+                fatalError("JWT_SECRET environment variable is required")
+            }
+        app.jwt.signers.use(.hs256(key: jwtSecret.data(using: .utf8)!))
         // Add migrations
         app.migrations.add(CreateStudent())
         app.migrations.add(CreateRevokedToken())
+        app.migrations.add(CreatePasswordResetToken())
         try app.autoMigrate().wait()
         try routes(app)
 

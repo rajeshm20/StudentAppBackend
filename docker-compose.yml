@@ -25,6 +25,10 @@ x-shared_environment: &shared_environment
   DATABASE_NAME: ${DATABASE_NAME:-student_db}
   DATABASE_USER: ${DATABASE_USER:-root}
   DATABASE_PASSWORD: ${DATABASE_PASSWORD:-newpassword}
+  JWT_SECRET: ${JWT_SECRET}
+  SENDGRID_API_KEY: ${SENDGRID_API_KEY}
+  FROM_EMAIL: ${FROM_EMAIL:-noreply@openedschool.com}
+  ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-http://localhost:8080}
 
 services:
   app:
