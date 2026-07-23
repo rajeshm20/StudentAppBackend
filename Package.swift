@@ -21,7 +21,8 @@ let package = Package(
         .package(url: "https://github.com/vapor/jwt.git", from: "4.0.0"),
         .package(url: "https://github.com/vapor/jwt-kit.git", from: "4.0.0"),
         .package(url: "https://github.com/GraphQLSwift/Graphiti.git", from: "1.15.0"),
-        .package(url: "https://github.com/GraphQLSwift/GraphQL.git", from: "2.10.0")
+        .package(url: "https://github.com/GraphQLSwift/GraphQL.git", from: "2.10.0"),
+        .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.19.0")
     ],
     targets: [
         .executableTarget(
@@ -36,7 +37,8 @@ let package = Package(
                 .product(name: "JWT", package: "jwt"),
                 .product(name: "JWTKit", package: "jwt-kit"),
                 .product(name: "Graphiti", package: "Graphiti"),
-                .product(name: "GraphQL", package: "GraphQL")
+                .product(name: "GraphQL", package: "GraphQL"),
+                .product(name: "AsyncHTTPClient", package: "async-http-client")
             ],
             swiftSettings: swiftSettings
         ),
