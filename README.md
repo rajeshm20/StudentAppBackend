@@ -186,7 +186,7 @@ Expected success response:
 }
 ```
 
-Logout behavior in the current implementation:
+#### Logout behavior in the current implementation:
 
 - Requires a bearer token in the `Authorization` header
 - Verifies the JWT before processing the request
@@ -205,22 +205,141 @@ Example logout after login:
 curl -X POST http://localhost:8080/auth/logout \
   -H "Authorization: Bearer eyJhbGciOi..."
 ```
+#### Forgot password with email OTP validation
 
-### GraphQL
-
-GraphQL is exposed at:
-
-```text
-POST /graphql
+forgot password (sends OTP)
+```bash
+curl -X POST http://localhost:8080/auth/forgot-password \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "your-real-email@gmail.com"
+  }'
 ```
+Expected response (success — email is registered):
 
-GraphiQL is available at:
-
-```text
-GET /graphiql
+```json
+{
+  "success": true,
+  "message": "A verification code has been sent to your email."
+}
 ```
+Expected response (email not registered):
 
-Current GraphQL operations:
+```json
+{
+  "success": false,
+  "message": "Email not registered, please enter a registered email id."
+}
+```
+Where to find the code:
+
+If SENDGRID_API_KEY is set → check the actual inbox for your-real-email@gmail.com.
+If it's not set (falls back to ConsoleEmailService) → check your terminal/server logs where swift run is running — you'll see something like:
+  📧 [DEV EMAIL] To: your-real-email@gmail.com | Subject: Your password reset code
+  Your verification code is: 482913
+  
+#### Verify the code
+```bash
+curl -X POST http://localhost:8080/auth/verify-reset-code \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "your-real-email@gmail.com",
+    "code": "482913"
+  }'
+```
+Expected response (success):
+
+```json
+{
+  "success": true,
+  "message": "Code verified.",
+  "sessionToken": "aB3xY9k2mZ..."
+}
+```
+Copy the sessionToken from this response — you need it for step 3.
+
+Expected response (wrong/expired code):
+
+```json
+{
+  "success": false,
+  "message": "Invalid code.",
+  "sessionToken": null
+}
+```
+#### Reset the password
+```bash
+curl -X POST http://localhost:8080/auth/reset-password \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "your-real-email@gmail.com",
+    "sessionToken": "aB3xY9k2mZ...",
+    "newPassword": "NewPass123",
+    "confirmPassword": "NewPass123"
+  }'
+```
+Expected response (success):
+
+```json
+{
+  "success": true,
+  "message": "Password reset successfully"
+}
+```
+Expected error responses:
+
+```json
+// mismatched passwords
+{"error": true, "reason": "Passwords do not match"}
+```
+// too short
+```json
+{"error": true, "reason": "Password must be at least 8 characters"}
+```
+// expired/invalid/reused session token
+```json
+{"error": true, "reason": "Invalid or expired reset session"}
+```
+#### Confirm the new password actually works
+```bash
+curl -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "your-real-email@gmail.com",
+    "password": "NewPass123"
+  }'
+```
+Should return a valid JWT if the reset actually took effect.
+
+Quick edge-case tests worth running too
+
+#### Unregistered email:
+
+```bash
+curl -X POST http://localhost:8080/auth/forgot-password \
+  -H "Content-Type: application/json" \
+  -d '{"email": "not-a-real-user@nowhere.com"}'
+```
+#### Reusing an already-verified code (should fail — single-use):
+
+```bash
+# Run step 2 again with the same code after step 3 already succeeded
+curl -X POST http://localhost:8080/auth/verify-reset-code \
+  -H "Content-Type: application/json" \
+  -d '{"email": "your-real-email@gmail.com", "code": "482913"}'
+```
+#### Expect this to fail since used = true after a successful reset.
+
+#### Waiting past the 10-minute code expiry, then verifying (should fail):
+
+```bash
+curl -X POST http://localhost:8080/auth/verify-reset-code \
+  -H "Content-Type: application/json" \
+  -d '{"email": "your-real-email@gmail.com", "code": "482913"}'
+```
+Expect: "Code has expired. Please request a new one."
+
+## Current GraphQL operations:
 
 - `students`: fetch all students
 - `student(id: UUID!)`: fetch a single student
