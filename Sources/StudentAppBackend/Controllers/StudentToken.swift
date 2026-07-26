@@ -5,7 +5,7 @@
 //  Created by Rajesh Mani on 07/08/25.
 //
 
-import JWTKit
+@preconcurrency import JWTKit
 import Foundation
 
 struct StudentToken: JWTPayload, Sendable {
