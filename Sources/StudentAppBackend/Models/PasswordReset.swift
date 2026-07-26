@@ -15,7 +15,11 @@ struct ForgotPasswordRequest: Content {
 struct ForgotPasswordResponse: Content {
     let success: Bool
     let message: String
-    // No token here anymore — it goes out via email only.
+
+    static let forgotPasswordSubmitted = ForgotPasswordResponse(
+        success: true,
+        message: "If this email is registered, a verification code has been sent."
+    )
 }
 
 struct VerifyResetCodeRequest: Content {

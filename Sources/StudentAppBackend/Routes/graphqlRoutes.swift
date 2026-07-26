@@ -19,8 +19,13 @@ func registerGraphQLRoutes(_ app: Application) throws {
         return response
     }
 
-    app.get("graphiql") { _ in
-        GraphiQLPage.html(endpoint: "/graphql")
+    if AppConfig.isGraphiQLEnabled(in: app.environment) {
+        app.get("graphiql") { _ in
+            GraphiQLPage.html(endpoint: "/graphql")
+        }
+        app.logger.notice("GraphiQL enabled at GET /graphiql")
+    } else {
+        app.logger.notice("GraphiQL disabled in production")
     }
 }
 

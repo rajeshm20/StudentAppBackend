@@ -8,7 +8,7 @@
 import JWTKit
 import Foundation
 
-struct StudentToken: JWTPayload {
+struct StudentToken: JWTPayload, Sendable {
     var exp: ExpirationClaim
     var studentID: UUID
     var jti: IDClaim

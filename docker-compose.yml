@@ -24,11 +24,12 @@ x-shared_environment: &shared_environment
   DATABASE_PORT: 3306
   DATABASE_NAME: ${DATABASE_NAME:-student_db}
   DATABASE_USER: ${DATABASE_USER:-root}
-  DATABASE_PASSWORD: ${DATABASE_PASSWORD:-newpassword}
-  JWT_SECRET: ${JWT_SECRET}
+  DATABASE_PASSWORD: ${DATABASE_PASSWORD:-local-dev-db-password-not-for-prod}
+  JWT_SECRET: ${JWT_SECRET:-local-dev-jwt-secret-at-least-32-chars}
   SENDGRID_API_KEY: ${SENDGRID_API_KEY}
   FROM_EMAIL: ${FROM_EMAIL:-noreply@openedschool.com}
-  ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-http://localhost:8080}
+  ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-http://localhost:8081}
+  ENABLE_GRAPHIQL: ${ENABLE_GRAPHIQL:-true}
 
 services:
   app:
@@ -40,8 +41,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
-      - '8080:8080'
+      - '8081:8080'
     # user: '0' # uncomment to run as root for testing purposes even though Dockerfile defines 'vapor' user.
     command: ["serve", "--env", "production", "--hostname", "0.0.0.0", "--port", "8080"]
   migrate:
@@ -54,8 +57,7 @@ services:
       db:
         condition: service_healthy
     command: ["migrate", "--yes"]
-    deploy:
-      replicas: 0
+    restart: "no"
   revert:
     image: studentappbackend:latest
     build:
