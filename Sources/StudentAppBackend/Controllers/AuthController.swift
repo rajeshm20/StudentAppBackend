@@ -20,7 +20,9 @@ struct AuthController: RouteCollection {
         authRoutes.post("forgot-password", use: forgotPassword)
         authRoutes.post("verify-reset-code", use: verifyResetCode)
         authRoutes.post("reset-password", use: resetPassword)
-        authRoutes.post("logout", use: logout)
+
+        let protectedAuth = authRoutes.grouped(JWTAuthMiddleware())
+        protectedAuth.post("logout", use: logout)
     }
     
     func signup(_ req: Request) async throws -> Student.Public {
@@ -61,25 +63,20 @@ struct AuthController: RouteCollection {
     func login(req: Request) async throws -> LoginResponse {
         let credentials = try req.content.decode(Student.LoginRequest.self)
         guard let student = try await StudentService.shared.authenticate(credentials: credentials, on: req.db) else {
-            throw LoginError(status: .unauthorized, message: Abort(.unauthorized, reason: "Invalid email or password").localizedDescription)
+            throw Abort(.unauthorized, reason: "Invalid email or password")
         }
-        let expiration = ExpirationClaim(value: .init(timeIntervalSinceNow: 60)) // 1 hour
-        let payload = StudentToken(exp: expiration, studentID: try student.requireID(), jti: IDClaim(value: UUID().uuidString))
-        let token = try req.jwt.sign(payload)
-        return LoginResponse.init(user: student.convertToPublic(), token: TokenResponse(token: token), status: .ok)
+        let token = try TokenService.signAccessToken(for: student, on: req)
+        return LoginResponse(user: student.convertToPublic(), token: TokenResponse(token: token), status: .ok)
     }
-
     func forgotPassword(_ req: Request) async throws -> ForgotPasswordResponse {
         let request = try req.content.decode(ForgotPasswordRequest.self)
+        let response = ForgotPasswordResponse.forgotPasswordSubmitted
 
         guard let student = try await Student.query(on: req.db)
             .filter(\.$email == request.email)
             .first()
         else {
-            return ForgotPasswordResponse(
-                success: false,
-                message: "Email not registered, please enter a registered email id."
-            )
+            return response
         }
 
         // 6-digit numeric code, 10-minute expiry
@@ -91,21 +88,22 @@ struct AuthController: RouteCollection {
             codeExpiresAt: Date().addingTimeInterval(10 * 60)
         )
         try await resetToken.save(on: req.db)
-
-        try await req.application.emailService.send(
-            to: student.email,
-            subject: "Your password reset code",
-            body: """
+        do {
+            try await req.application.emailService.send(
+                to: student.email,
+                subject: "Your password reset code",
+                body: """
             Your verification code is: \(code)
-
+            
             This code expires in 10 minutes. If you didn't request this, you can ignore this email.
             """
-        )
+            )
+        } catch {
+            req.logger.warning("Failed to send email: \(error)")
+            throw Abort(.internalServerError, reason: "Could not send reset email")
+        }
 
-        return ForgotPasswordResponse(
-            success: true,
-            message: "A verification code has been sent to your email."
-        )
+        return response
     }
 
     func verifyResetCode(_ req: Request) async throws -> VerifyResetCodeResponse {
@@ -177,17 +175,13 @@ struct AuthController: RouteCollection {
     }
 
     func logout(_ req: Request) async throws -> LogoutResponse {
-        guard let bearer = req.headers.bearerAuthorization else {
+        _ = try await TokenService.authenticateStudent(from: req)
+
+        guard let payload = req.authenticatedToken else {
             throw Abort(.unauthorized, reason: "Missing or invalid Authorization header")
         }
 
-        let payload = try req.jwt.verify(bearer.token, as: StudentToken.self)
-        if try await RevokedToken.query(on: req.db).filter(\.$jti == payload.jti.value).first() != nil {
-            throw Abort(.unauthorized, reason: "Token already revoked")
-        }
-
-        let revokedToken = RevokedToken(jti: payload.jti.value, expiresAt: payload.exp.value)
-        try await revokedToken.save(on: req.db)
+        try await TokenService.revokeToken(payload, on: req.db)
         return LogoutResponse(message: "Logout successful")
     }
 }

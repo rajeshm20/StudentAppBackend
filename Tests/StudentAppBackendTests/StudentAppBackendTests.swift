@@ -370,6 +370,87 @@ struct StudentAppBackendTests {
             })
         }
     }
+
+    @Test("Health live endpoint returns ok")
+    func testHealthLive() async throws {
+        try await withApp { app in
+            try await app.testing().test(.GET, "health/live", afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(HealthResponse.self)
+                #expect(body.status == "ok")
+            })
+        }
+    }
+
+    @Test("Health ready endpoint returns ready when database is available")
+    func testHealthReady() async throws {
+        try await withApp { app in
+            try await app.testing().test(.GET, "health/ready", afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(HealthResponse.self)
+                #expect(body.status == "ready")
+            })
+        }
+    }
+
+    @Test("GraphQL students query requires authentication")
+    func testGraphQLStudentsRequiresAuth() async throws {
+        try await withApp { app in
+            let payload = GraphQLQueryRequest(query: "{ students { id name email } }")
+            try await app.testing().test(.POST, "graphql", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(GraphQLErrorOnlyResponse.self)
+                #expect(body.errors?.isEmpty == false)
+            })
+        }
+    }
+
+    @Test("GraphQL students query returns authenticated student only")
+    func testGraphQLStudentsWithAuth() async throws {
+        try await withApp { app in
+            let signupPayload = ["name": "Graph Auth", "email": "graphauth@example.com", "password": "secret123"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(signupPayload)
+            })
+
+            var token = ""
+            let loginPayload = ["email": "graphauth@example.com", "password": "secret123"]
+            try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
+                try req.content.encode(loginPayload)
+            }, afterResponse: { res async throws in
+                let loginResponse = try res.content.decode(LoginResponse.self)
+                token = loginResponse.token.token
+            })
+
+            let payload = GraphQLQueryRequest(query: "{ students { id name email } }")
+            try await app.testing().test(.POST, "graphql", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+                try req.content.encode(payload)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(GraphQLStudentsResponse.self)
+                #expect(body.data?.students.count == 1)
+                #expect(body.data?.students.first?.email == "graphauth@example.com")
+            })
+        }
+    }
+
+    @Test("Forgot password uses enumeration-safe response")
+    func testForgotPasswordEnumerationSafe() async throws {
+        try await withApp { app in
+            let payload = ["email": "unknown@example.com"]
+            try await app.testing().test(.POST, "auth/forgot-password", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(ForgotPasswordResponse.self)
+                #expect(body.success == true)
+                #expect(body.message == ForgotPasswordResponse.forgotPasswordSubmitted.message)
+            })
+        }
+    }
 }
 
 // MARK: - Test Response Types
@@ -423,4 +504,25 @@ struct GraphQLSignupInput: Content {
 
 struct LogoutResponse: Content {
     let message: String
+}
+
+struct HealthResponse: Content {
+    let status: String
+}
+
+struct GraphQLQueryRequest: Content {
+    let query: String
+}
+
+struct GraphQLErrorOnlyResponse: Content {
+    let errors: [GraphQLErrorPayload]?
+}
+
+struct GraphQLStudentsResponse: Content {
+    let data: GraphQLStudentsData?
+    let errors: [GraphQLErrorPayload]?
+}
+
+struct GraphQLStudentsData: Content {
+    let students: [StudentPublic]
 }

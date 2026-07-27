@@ -1,4 +1,21 @@
 services:
+  migrate:
+    image: ghcr.io/rajeshm20/studentappbackend:latest
+    restart: "no"
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_HOST: db
+      DATABASE_PORT: 3306
+      DATABASE_NAME: ${DATABASE_NAME:-student_db}
+      DATABASE_USER: ${DATABASE_USER:-studentapp}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:?ALLOWED_ORIGIN is required}
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["migrate", "--yes"]
+
   app:
     image: ghcr.io/rajeshm20/studentappbackend:latest
     restart: unless-stopped
@@ -7,28 +24,34 @@ services:
       DATABASE_HOST: db
       DATABASE_PORT: 3306
       DATABASE_NAME: ${DATABASE_NAME:-student_db}
-      DATABASE_USER: ${DATABASE_USER:-root}
-      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-newpassword}
+      DATABASE_USER: ${DATABASE_USER:-studentapp}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:?ALLOWED_ORIGIN is required}
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      FROM_EMAIL: ${FROM_EMAIL:-noreply@openedschool.com}
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "8080:8080"
-    command: ["serve", "--env", "production", "--hostname", "0.0.0.0", "--port", "8080"]
+    command: ["serve", "--env", "development", "--hostname", "0.0.0.0", "--port", "8080"]
 
   db:
     image: mysql:8
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-newpassword}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
       MYSQL_ROOT_HOST: ${MYSQL_ROOT_HOST:-%}
       MYSQL_DATABASE: ${DATABASE_NAME:-student_db}
-    ports:
-      - "3306:3306"
+      MYSQL_USER: ${DATABASE_USER:-studentapp}
+      MYSQL_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
     volumes:
       - db_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD:-newpassword}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}"]
       interval: 10s
       timeout: 5s
       retries: 5

@@ -5,10 +5,10 @@
 //  Created by Rajesh Mani on 07/08/25.
 //
 
-import JWTKit
+@preconcurrency import JWTKit
 import Foundation
 
-struct StudentToken: JWTPayload {
+struct StudentToken: JWTPayload, Sendable {
     var exp: ExpirationClaim
     var studentID: UUID
     var jti: IDClaim

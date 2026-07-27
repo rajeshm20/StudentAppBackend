@@ -91,9 +91,11 @@ final class RateLimiterMiddleware: AsyncMiddleware {
         // 🎯 Different rules depending on endpoint
         let (maxRequests, windowSeconds): (Int, Int) = {
             if route.starts(with: "/auth/login") {
-                return (5, 60)   // 5 requests per 60s for login
+                return (5, 60)
+            } else if route.starts(with: "/auth/forgot-password") || route.starts(with: "/auth/verify-reset-code") {
+                return (3, 60)
             } else {
-                return (100, 60) // default global rule
+                return (100, 60)
             }
         }()
 

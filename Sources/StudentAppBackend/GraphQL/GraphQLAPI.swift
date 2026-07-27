@@ -21,18 +21,19 @@ struct GraphQLRequestBody: Content, @unchecked Sendable {
 struct GraphQLResolver {
     func students(request: Request, arguments: NoArguments) throws -> EventLoopFuture<[Student.Public]> {
         request.eventLoop.makeFutureWithTask {
-            let students = try await Student.query(on: request.db).all()
-            return students.map { $0.convertToPublic() }
+            let student = try await TokenService.authenticateStudent(from: request)
+            return [student.convertToPublic()]
         }
     }
 
     func student(request: Request, arguments: StudentByIDArguments) throws -> EventLoopFuture<Student.Public?> {
         request.eventLoop.makeFutureWithTask {
-            guard let student = try await Student.find(arguments.id, on: request.db) else {
-                return nil
+            let authenticated = try await TokenService.authenticateStudent(from: request)
+            guard authenticated.id == arguments.id else {
+                throw Abort(.forbidden, reason: "You can only access your own student record")
             }
 
-            return student.convertToPublic()
+            return authenticated.convertToPublic()
         }
     }
 
@@ -80,9 +81,7 @@ struct GraphQLResolver {
                 throw Abort(.unauthorized, reason: "Invalid email or password")
             }
 
-            let expiration = ExpirationClaim(value: Date(timeIntervalSinceNow: 60))
-            let payload = StudentToken(exp: expiration, studentID: try student.requireID(), jti: IDClaim(value: UUID().uuidString))
-            let token = try request.jwt.sign(payload)
+            let token = try TokenService.signAccessToken(for: student, on: request)
 
             return AuthPayload(user: student.convertToPublic(), token: token)
         }
@@ -92,6 +91,11 @@ struct GraphQLResolver {
     }
 
     func updateStudent(context: Request, arguments: UpdateArguments) async throws -> Student.Public {
+        let authenticated = try await TokenService.authenticateStudent(from: context)
+        guard authenticated.id == arguments.input.id else {
+            throw Abort(.forbidden, reason: "You can only update your own student record")
+        }
+
         guard let student = try await Student.find(arguments.input.id, on: context.db) else {
             throw Abort(.notFound, reason: "Student not found")
         }

@@ -1,0 +1,32 @@
+ Container studentappbackend-db-1 Running 
+ Container studentappbackend-db-1 Waiting 
+ Container studentappbackend-db-1 Healthy 
+ Container studentappbackend-app-run-3eba706cea3e Creating 
+ Container studentappbackend-app-run-3eba706cea3e Created 
+[ DEBUG ] Could not load .env.development file: Not found: Unable to open or create file at path '.env.development', either a component of the path did not exist or the named file to be opened did not exist. ('open' system call failed with '(2) No such file or directory'.) (Vapor/DotEnv.swift:303)
+[ DEBUG ] Could not load .env file: Not found: Unable to open or create file at path '.env', either a component of the path did not exist or the named file to be opened did not exist. ('open' system call failed with '(2) No such file or directory'.) (Vapor/DotEnv.swift:303)
+PWD: /app
+Cert path: certs/cert.pem
+Key path: certs/key.pem
+Cert exists: false
+Key exists: false
+[ NOTICE ] HTTPS disabled. Starting server on HTTP. (StudentAppBackend/configure.swift:132)
+[ DEBUG ] Executing query [binds: [], database-id: mysql, sql: CREATE TABLE IF NOT EXISTS `_fluent_migrations` (`id` VARBINARY(16) PRIMARY KEY, `name` VARCHAR(255) NOT NULL, `batch` BIGINT NOT NULL, `created_at` DATETIME(6), `updated_at` DATETIME(6), CONSTRAINT `eb3ee69e0c062ede0b815d412472c764ccb82e41` UNIQUE (`name`))] (MySQLKit/MySQLDatabase+SQL.swift:52)
+[ DEBUG ] Opening new connection to [IPv4]db/172.18.0.2:3306 [database-id: mysql] (MySQLNIO/MySQLConnection.swift:20)
+[ DEBUG ] Servicing connection waitlist item with id 1 [database-id: mysql] (AsyncKit/EventLoopConnectionPool.swift:286)
+[ DEBUG ] Running query [action: read, database-id: mysql, fields: [], filters: [], joins: [], limits: [1], offsets: [], schema: _fluent_migrations, sorts: [[direction: descending, field: _fluent_migrations.batch]], unique: false] (FluentKit/QueryBuilder.swift:320)
+[ DEBUG ] Executing query [binds: [], database-id: mysql, sql: SELECT `_fluent_migrations`.`id` AS `_fluent_migrations_id`, `_fluent_migrations`.`name` AS `_fluent_migrations_name`, `_fluent_migrations`.`batch` AS `_fluent_migrations_batch`, `_fluent_migrations`.`created_at` AS `_fluent_migrations_created_at`, `_fluent_migrations`.`updated_at` AS `_fluent_migrations_updated_at` FROM `_fluent_migrations` ORDER BY `_fluent_migrations`.`batch` DESC LIMIT 1] (MySQLKit/MySQLDatabase+SQL.swift:52)
+[ DEBUG ] Running query [action: read, database-id: mysql, fields: [], filters: [], joins: [], limits: [], offsets: [], schema: _fluent_migrations, sorts: [], unique: false] (FluentKit/QueryBuilder.swift:320)
+[ DEBUG ] Executing query [binds: [], database-id: mysql, sql: SELECT `_fluent_migrations`.`id` AS `_fluent_migrations_id`, `_fluent_migrations`.`name` AS `_fluent_migrations_name`, `_fluent_migrations`.`batch` AS `_fluent_migrations_batch`, `_fluent_migrations`.`created_at` AS `_fluent_migrations_created_at`, `_fluent_migrations`.`updated_at` AS `_fluent_migrations_updated_at` FROM `_fluent_migrations`] (MySQLKit/MySQLDatabase+SQL.swift:52)
+Route: POST /auth/signup
+Route: POST /auth/login
+Route: POST /auth/logout
+Route: POST /graphql
+Route: GET /graphiql
+[ WARNING ] .unknownCommand("swift", available: ["routes", "serve", "migrate"]) (Vapor/Application.swift:205)
+[ WARNING ] .unknownCommand("swift", available: ["routes", "serve", "migrate"]) (StudentAppBackend/entrypoint.swift:24)
+[ DEBUG ] Application shutting down (Vapor/Application.swift:307)
+[ DEBUG ] Connection pool shutting down, closing each event loop's storage (AsyncKit/EventLoopGroupConnectionPool.swift:215)
+Swift/ErrorType.swift:253: Fatal error: Error raised at top level: .unknownCommand("swift", available: ["routes", "serve", "migrate"])
+
+*** Signal 4: Backtracing from 0x5c45b653aabf...
