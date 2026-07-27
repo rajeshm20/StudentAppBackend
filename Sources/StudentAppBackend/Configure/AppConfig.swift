@@ -1,6 +1,12 @@
 import Vapor
 
 enum AppConfig {
+    enum DatabaseTLSMode {
+        case disable
+        case verifyFull
+        case noVerify
+    }
+
     static let minimumJWTSecretLength = 32
     static let defaultJWTAccessTTL: TimeInterval = 3600
 
@@ -73,6 +79,19 @@ enum AppConfig {
                 .internalServerError,
                 reason: "DATABASE_PASSWORD must not use default values in production"
             )
+        }
+    }
+
+    static func databaseTLSMode(for environment: Environment) -> DatabaseTLSMode {
+        switch Environment.get("DATABASE_TLS_MODE")?.lowercased() {
+        case "disable", "disabled", "off":
+            return .disable
+        case "insecure", "no-verify", "skip-verify":
+            return .noVerify
+        case "require", "verify-full", "full":
+            return .verifyFull
+        default:
+            return environment == .production ? .verifyFull : .noVerify
         }
     }
 }

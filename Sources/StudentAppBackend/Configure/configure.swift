@@ -31,19 +31,29 @@ private func shouldEnableTLS(certPath: String, keyPath: String) -> Bool {
     return tlsRequested && hasTLSFiles
 }
 
+private func databaseTLSConfiguration(for environment: Environment) -> TLSConfiguration? {
+    switch AppConfig.databaseTLSMode(for: environment) {
+    case .disable:
+        return nil
+    case .verifyFull:
+        var tls = TLSConfiguration.makeClientConfiguration()
+        tls.certificateVerification = .fullVerification
+        return tls
+    case .noVerify:
+        var tls = TLSConfiguration.makeClientConfiguration()
+        tls.certificateVerification = .none
+        return tls
+    }
+}
+
 private func configureDatabase(_ app: Application) {
-    let isProduction = app.environment == .production
     app.databases.use(.mysql(
         hostname: Environment.get("DATABASE_HOST") ?? "localhost",
         port: Environment.get("DATABASE_PORT").flatMap(Int.init(_:)) ?? MySQLConfiguration.ianaPortNumber,
         username: Environment.get("DATABASE_USER") ?? "root",
         password: Environment.get("DATABASE_PASSWORD") ?? (app.environment == .testing ? "password" : "newpassword"),
         database: Environment.get("DATABASE_NAME") ?? "student_db",
-        tlsConfiguration: {
-            var tls = TLSConfiguration.makeClientConfiguration()
-            tls.certificateVerification = isProduction ? .fullVerification : .none
-            return tls
-        }()
+        tlsConfiguration: databaseTLSConfiguration(for: app.environment)
     ), as: .mysql)
 }
 

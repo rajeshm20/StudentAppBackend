@@ -63,12 +63,11 @@ struct AuthController: RouteCollection {
     func login(req: Request) async throws -> LoginResponse {
         let credentials = try req.content.decode(Student.LoginRequest.self)
         guard let student = try await StudentService.shared.authenticate(credentials: credentials, on: req.db) else {
-            throw LoginError(status: .unauthorized, message: Abort(.unauthorized, reason: "Invalid email or password").localizedDescription)
+            throw Abort(.unauthorized, reason: "Invalid email or password")
         }
         let token = try TokenService.signAccessToken(for: student, on: req)
-        return LoginResponse.init(user: student.convertToPublic(), token: TokenResponse(token: token), status: .ok)
+        return LoginResponse(user: student.convertToPublic(), token: TokenResponse(token: token), status: .ok)
     }
-
     func forgotPassword(_ req: Request) async throws -> ForgotPasswordResponse {
         let request = try req.content.decode(ForgotPasswordRequest.self)
         let response = ForgotPasswordResponse.forgotPasswordSubmitted
@@ -89,16 +88,20 @@ struct AuthController: RouteCollection {
             codeExpiresAt: Date().addingTimeInterval(10 * 60)
         )
         try await resetToken.save(on: req.db)
-
-        try await req.application.emailService.send(
-            to: student.email,
-            subject: "Your password reset code",
-            body: """
+        do {
+            try await req.application.emailService.send(
+                to: student.email,
+                subject: "Your password reset code",
+                body: """
             Your verification code is: \(code)
-
+            
             This code expires in 10 minutes. If you didn't request this, you can ignore this email.
             """
-        )
+            )
+        } catch {
+            req.logger.warning("Failed to send email: \(error)")
+            throw Abort(.internalServerError, reason: "Could not send reset email")
+        }
 
         return response
     }

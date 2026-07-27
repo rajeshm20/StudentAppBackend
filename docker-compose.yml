@@ -23,8 +23,9 @@ x-shared_environment: &shared_environment
   DATABASE_HOST: db
   DATABASE_PORT: 3306
   DATABASE_NAME: ${DATABASE_NAME:-student_db}
-  DATABASE_USER: ${DATABASE_USER:-root}
-  DATABASE_PASSWORD: ${DATABASE_PASSWORD:-local-dev-db-password-not-for-prod}
+  DATABASE_USER: ${DOCKER_DATABASE_USER:-studentapp}
+  DATABASE_PASSWORD: ${DOCKER_DATABASE_PASSWORD:-local-dev-db-password-not-for-prod}
+  DATABASE_TLS_MODE: ${DOCKER_DATABASE_TLS_MODE:-insecure}
   JWT_SECRET: ${JWT_SECRET:-local-dev-jwt-secret-at-least-32-chars}
   SENDGRID_API_KEY: ${SENDGRID_API_KEY}
   FROM_EMAIL: ${FROM_EMAIL:-noreply@openedschool.com}
@@ -75,13 +76,15 @@ services:
     volumes:
       - db_data:/var/lib/mysql
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-newpassword}
+      MYSQL_ROOT_PASSWORD: ${DOCKER_DATABASE_PASSWORD:-local-dev-db-password-not-for-prod}
       MYSQL_ROOT_HOST: ${MYSQL_ROOT_HOST:-%}
       MYSQL_DATABASE: ${DATABASE_NAME:-student_db}
+      MYSQL_USER: ${DOCKER_DATABASE_USER:-studentapp}
+      MYSQL_PASSWORD: ${DOCKER_DATABASE_PASSWORD:-local-dev-db-password-not-for-prod}
     ports:
       - '3306:3306'
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD:-newpassword}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${DOCKER_DATABASE_PASSWORD:-local-dev-db-password-not-for-prod}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -91,6 +94,7 @@ services:
     working_dir: /app
     volumes:
       - .:/app
+      - ./.env:/app/.env
     environment:
       <<: *shared_environment
     depends_on:
