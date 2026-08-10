@@ -1,5 +1,6 @@
 import Fluent
 import FluentMySQLDriver
+import FluentSQLiteDriver
 import JWT
 import JWTKit
 import Logging
@@ -47,11 +48,16 @@ private func databaseTLSConfiguration(for environment: Environment) -> TLSConfig
 }
 
 private func configureDatabase(_ app: Application) {
+    if app.environment == .testing || Environment.get("DATABASE_DRIVER")?.lowercased() == "sqlite" {
+        app.databases.use(.sqlite(.memory), as: .sqlite, isDefault: true)
+        return
+    }
+
     app.databases.use(.mysql(
         hostname: Environment.get("DATABASE_HOST") ?? "localhost",
         port: Environment.get("DATABASE_PORT").flatMap(Int.init(_:)) ?? MySQLConfiguration.ianaPortNumber,
         username: Environment.get("DATABASE_USER") ?? "root",
-        password: Environment.get("DATABASE_PASSWORD") ?? (app.environment == .testing ? "password" : "newpassword"),
+        password: Environment.get("DATABASE_PASSWORD") ?? "newpassword",
         database: Environment.get("DATABASE_NAME") ?? "student_db",
         tlsConfiguration: databaseTLSConfiguration(for: app.environment)
     ), as: .mysql)

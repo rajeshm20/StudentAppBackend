@@ -1,22 +1,24 @@
 {
-    "configurations": [
-        {
-            "type": "swift",
-            "request": "launch",
-            "args": [],
-            "cwd": "${workspaceFolder:StudentAppBackend}",
-            "name": "Debug StudentAppBackend",
-            "program": "${workspaceFolder:StudentAppBackend}/.build/debug/StudentAppBackend",
-            "preLaunchTask": "swift: Build Debug StudentAppBackend"
-        },
-        {
-            "type": "swift",
-            "request": "launch",
-            "args": [],
-            "cwd": "${workspaceFolder:StudentAppBackend}",
-            "name": "Release StudentAppBackend",
-            "program": "${workspaceFolder:StudentAppBackend}/.build/release/StudentAppBackend",
-            "preLaunchTask": "swift: Build Release StudentAppBackend"
-        }
-    ]
+  "configurations": [
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:StudentAppBackend}",
+      "name": "Debug StudentAppBackend",
+      "preLaunchTask": "swift: Build Debug StudentAppBackend",
+      "target": "StudentAppBackend",
+      "configuration": "debug"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:StudentAppBackend}",
+      "name": "Release StudentAppBackend",
+      "preLaunchTask": "swift: Build Release StudentAppBackend",
+      "target": "StudentAppBackend",
+      "configuration": "release"
+    }
+  ]
 }
