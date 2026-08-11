@@ -111,16 +111,31 @@ struct AuthController: RouteCollection {
 
         guard let resetToken = try await PasswordResetToken.query(on: req.db)
             .filter(\.$email == request.email)
-            .filter(\.$code == request.code)
             .filter(\.$used == false)
+            .filter(\.$verified == false)
             .sort(\.$codeExpiresAt, .descending)
             .first()
         else {
-            return VerifyResetCodeResponse(success: false, message: "Invalid code.", sessionToken: nil)
+            return VerifyResetCodeResponse(success: false, message: "Invalid or expired code.", sessionToken: nil)
+        }
+
+        if resetToken.attempts >= 3 {
+            resetToken.used = true
+            try await resetToken.save(on: req.db)
+            return VerifyResetCodeResponse(success: false, message: "Too many failed attempts. Please request a new code.", sessionToken: nil)
         }
 
         guard resetToken.codeExpiresAt > Date() else {
             return VerifyResetCodeResponse(success: false, message: "Code has expired. Please request a new one.", sessionToken: nil)
+        }
+
+        guard resetToken.code == request.code else {
+            resetToken.attempts += 1
+            if resetToken.attempts >= 3 {
+                resetToken.used = true
+            }
+            try await resetToken.save(on: req.db)
+            return VerifyResetCodeResponse(success: false, message: "Invalid code.", sessionToken: nil)
         }
 
         // Issue a short-lived session token — this is what screen 2 will actually use,

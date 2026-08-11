@@ -36,6 +36,9 @@ final class PasswordResetToken: Model, Content, @unchecked Sendable {
     @Field(key: "used")
     var used: Bool
 
+    @Field(key: "attempts")
+    var attempts: Int
+
     init() {}
 
     init(id: UUID? = nil, email: String, code: String, codeExpiresAt: Date) {
@@ -45,6 +48,7 @@ final class PasswordResetToken: Model, Content, @unchecked Sendable {
         self.codeExpiresAt = codeExpiresAt
         self.verified = false
         self.used = false
+        self.attempts = 0
     }
 }
 
@@ -60,6 +64,7 @@ struct CreatePasswordResetToken: AsyncMigration {
             .field("sessionExpiresAt", .datetime)
             .field("verified", .bool, .required, .sql(.default(false)))
             .field("used", .bool, .required, .sql(.default(false)))
+            .field("attempts", .int, .required, .sql(.default(0)))
             .create()
     }
 

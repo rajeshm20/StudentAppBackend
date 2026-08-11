@@ -13,12 +13,12 @@ struct HealthController: RouteCollection {
     }
 
     func ready(_ req: Request) async throws -> Response {
-        guard let sql = req.db as? any SQLDatabase else {
-            throw Abort(.serviceUnavailable, reason: "Database unavailable")
-        }
-
         do {
-            try await sql.raw("SELECT 1").run()
+            if let sql = req.db as? any SQLDatabase {
+                try await sql.raw("SELECT 1").run()
+            } else {
+                _ = try await Student.query(on: req.db).range(0..<1).all()
+            }
         } catch {
             req.logger.error("Readiness check failed: \(error)")
             throw Abort(.serviceUnavailable, reason: "Database not ready")

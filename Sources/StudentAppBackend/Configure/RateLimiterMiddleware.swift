@@ -11,50 +11,6 @@ import NIOCore
 
 //// MARK: 1. Security Headers Middleware
 ////MARK: ⏳ 2. Rate Limiting Middleware
-//
-//final actor RateLimiterMiddleware: AsyncMiddleware {
-//    private let maxRequests: Int
-//    private let window: TimeAmount
-//    private var clients: [String: (count: Int, resetTime: Date)] = [:]
-//    private let lock = NIOLock()
-//
-//    init(maxRequests: Int = 100, window: TimeAmount = .seconds(60)) {
-//        self.maxRequests = maxRequests
-//        self.window = window
-//    }
-//
-//    func respond(to request: Request, chainingTo next: any AsyncResponder) async throws -> Response {
-//        let ip = request.remoteAddress?.ipAddress ?? "unknown"
-//        let now = Date()
-//
-//        var allowed = true
-//        lock.withLock {
-//            if var record = clients[ip] {
-//                if now > record.resetTime {
-//                    record = (1, now.addingTimeInterval(Double(window.nanoseconds) / 1_000_000_000))
-//                } else {
-//                    record.count += 1
-//                }
-//                clients[ip] = record
-//                if record.count > maxRequests {
-//                    allowed = false
-//                }
-//            } else {
-//                clients[ip] = (1, now.addingTimeInterval(Double(window.nanoseconds) / 1_000_000_000))
-//            }
-//        }
-//
-//        guard allowed else {
-//            throw Abort(.tooManyRequests, reason: "Rate limit exceeded. Try again later.")
-//        }
-//
-//        return try await next.respond(to: request)
-//    }
-//}
-//
-
-
-import Vapor
 
 actor RateLimiterStore {
     private var clients: [String: [String: (count: Int, resetTime: Date)]] = [:]
