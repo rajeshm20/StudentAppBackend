@@ -1,11 +1,22 @@
+// MARK: - StudentAppBackendTests.swift
+// Comprehensive integration tests for authentication, authorization, and RBAC.
+// All tests run against an in-memory SQLite database (not production MySQL).
+// Tests are serialized to prevent race conditions on shared test state.
+
 @testable import StudentAppBackend
 import VaporTesting
 import Testing
 import Fluent
 import XCTest
+import Vapor
+
+// MARK: - Test Suite
 
 @Suite("App Tests with DB", .serialized)
 struct StudentAppBackendTests {
+
+    // MARK: - Test Harness
+
     private func withApp(_ test: (Application) async throws -> ()) async throws {
         let app = try await Application.make(.testing)
         do {
@@ -20,93 +31,435 @@ struct StudentAppBackendTests {
         }
         try await app.asyncShutdown()
     }
-    
-    @Test("Test Signup Route")
-    func testSignup() async throws {
+
+    // MARK: - Shared Helpers
+
+    /// Registers a student via the new POST /auth/signup/student endpoint.
+    private func registerStudent(
+        firstName: String = "John",
+        lastName: String = "Doe",
+        email: String = "john@example.com",
+        password: String = "secret123",
+        confirmPassword: String? = nil,
+        countryCode: String = "+91",
+        contactNumber: String = "9876543210",
+        on app: Application
+    ) async throws -> StudentPublicResponse {
+        let payload = NewSignupPayload(
+            firstName: firstName,
+            lastName: lastName,
+            email: email,
+            password: password,
+            confirmPassword: confirmPassword ?? password,
+            countryCode: countryCode,
+            contactNumber: contactNumber
+        )
+        var result: StudentPublicResponse?
+        try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+            try req.content.encode(payload)
+        }, afterResponse: { res async throws in
+            result = try res.content.decode(StudentPublicResponse.self)
+        })
+        return result!
+    }
+
+    /// Logs in and returns a JWT token.
+    private func login(email: String, password: String, on app: Application) async throws -> String {
+        let loginPayload = ["email": email, "password": password]
+        var token = ""
+        try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
+            try req.content.encode(loginPayload)
+        }, afterResponse: { res async throws in
+            let loginResponse = try res.content.decode(LoginResponseTest.self)
+            token = loginResponse.token.token
+        })
+        return token
+    }
+
+    /// Injects a user with a specific role directly into the database (used for RBAC tests).
+    private func seedUser(
+        role: String,
+        email: String,
+        password: String = "secret123",
+        on db: any Database
+    ) async throws -> UUID {
+        let hashedPassword = try Bcrypt.hash(password)
+        let student = Student(
+            id: UUID(),
+            firstName: "Seed",
+            lastName: role.capitalized,
+            name: "Seed \(role.capitalized)",
+            email: email,
+            passwordHash: hashedPassword,
+            role: UserRole(rawValue: role) ?? .student,
+            status: .active
+        )
+        try await student.save(on: db)
+        return try student.requireID()
+    }
+
+    // MARK: =========================================================
+    // MARK: - Legacy Signup Tests (POST /auth/signup — Backward Compat)
+    // MARK: =========================================================
+
+    @Test("Legacy signup route still works")
+    func testLegacySignup() async throws {
         try await withApp { app in
-            struct SignupPayload: Content {
-                let name: String
-                let email: String
-                let password: String
-                let dob: Date?
-                let phoneNumber: String?
-            }
-            let payload = SignupPayload(
-                name: "Karthick",
-                email: "karthickt@example.com",
-                password: "secret123",
-                dob: nil,
-                phoneNumber: "1234567890"
-            )
+            let payload = ["name": "Karthick", "email": "karthickt@example.com", "password": "secret123"]
             try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
                 try req.content.encode(payload)
             }, afterResponse: { res async in
                 #expect(res.status == .ok)
                 do {
-                    let body = try res.content.decode(StudentPublic.self)
+                    let body = try res.content.decode(StudentPublicResponse.self)
                     #expect(body.email == "karthickt@example.com")
-                    #expect(body.name == "Karthick")
-                    #expect(body.phoneNumber == "1234567890")
+                    #expect(body.role == "student")  // always student
                 } catch {
-                    XCTFail("Failed to decode LoginResponse: \(error)")
+                    XCTFail("Failed to decode response: \(error)")
                 }
             })
         }
     }
 
-    @Test("Test Login Route")
-    func testLogin() async throws {
-        try await withApp { app in
-            let signupPayload = ["name": "Karthick", "email": "karthickt@example.com", "password": "secret123"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(signupPayload)
-            })
+    // MARK: =========================================================
+    // MARK: - New Student Signup Tests (POST /auth/signup/student)
+    // MARK: =========================================================
 
-            let loginPayload = ["email": "karthickt@example.com", "password": "secret123"]
+    @Test("Valid student signup returns student role")
+    func testNewSignupSuccess() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(
+                firstName: "John",
+                lastName: "Doe",
+                email: "john@example.com",
+                password: "secret123",
+                confirmPassword: "secret123",
+                countryCode: "+91",
+                contactNumber: "9876543210"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+                do {
+                    let body = try res.content.decode(StudentPublicResponse.self)
+                    #expect(body.email == "john@example.com")
+                    #expect(body.firstName == "John")
+                    #expect(body.lastName == "Doe")
+                    #expect(body.role == "student")  // always student
+                    #expect(body.contactNumber == "+919876543210")  // E.164 normalized
+                } catch {
+                    XCTFail("Failed to decode response: \(error)")
+                }
+            })
+        }
+    }
+
+    @Test("Signup: role escalation blocked — client sends admin, gets student")
+    func testSignupRoleEscalationBlocked() async throws {
+        // The new signup endpoint has no role field in the request,
+        // but even if a raw JSON body includes a role key, it must be ignored.
+        try await withApp { app in
+            // Inject via raw JSON with a role field
+            struct PayloadWithRole: Content {
+                let firstName: String
+                let lastName: String
+                let email: String
+                let password: String
+                let confirmPassword: String
+                let countryCode: String
+                let contactNumber: String
+                let role: String  // should be ignored
+            }
+            let payload = PayloadWithRole(
+                firstName: "Evil",
+                lastName: "Hacker",
+                email: "hacker@example.com",
+                password: "secret123",
+                confirmPassword: "secret123",
+                countryCode: "+1",
+                contactNumber: "2025551234",
+                role: "admin"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+                do {
+                    let body = try res.content.decode(StudentPublicResponse.self)
+                    #expect(body.role == "student")  // must be student, not admin
+                } catch {
+                    XCTFail("Failed to decode response: \(error)")
+                }
+            })
+        }
+    }
+
+    @Test("Signup: missing firstName returns 400")
+    func testSignupMissingFirstName() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(firstName: "", lastName: "Doe", email: "test@example.com",
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: "9876543210")
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("Signup: missing lastName returns 400")
+    func testSignupMissingLastName() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(firstName: "John", lastName: "", email: "test@example.com",
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: "9876543210")
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("Signup: missing email returns 400")
+    func testSignupMissingEmail() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "",
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: "9876543210")
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("Signup: invalid email format returns 400")
+    func testSignupInvalidEmail() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "not-an-email",
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: "9876543210")
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("Signup: missing password returns 400")
+    func testSignupMissingPassword() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "test@example.com",
+                password: "", confirmPassword: "", countryCode: "+91", contactNumber: "9876543210")
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("Signup: password too short returns 400")
+    func testSignupPasswordTooShort() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "test@example.com",
+                password: "abc1", confirmPassword: "abc1", countryCode: "+91", contactNumber: "9876543210")
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("Signup: password/confirmPassword mismatch returns 400")
+    func testSignupPasswordMismatch() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "test@example.com",
+                password: "secret123", confirmPassword: "different1", countryCode: "+91", contactNumber: "9876543210")
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("Signup: missing countryCode returns 400")
+    func testSignupMissingCountryCode() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "test@example.com",
+                password: "secret123", confirmPassword: "secret123", countryCode: "", contactNumber: "9876543210")
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("Signup: invalid countryCode (no + prefix) returns 400")
+    func testSignupInvalidCountryCode() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "test@example.com",
+                password: "secret123", confirmPassword: "secret123", countryCode: "91", contactNumber: "9876543210")
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("Signup: invalid contactNumber (non-digits) returns 400")
+    func testSignupInvalidContactNumber() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "test@example.com",
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: "98765abc")
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("Signup: contactNumber too short returns 400")
+    func testSignupContactNumberTooShort() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "test@example.com",
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: "123")
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("Signup: duplicate email returns 409")
+    func testSignupDuplicateEmail() async throws {
+        try await withApp { app in
+            let email = "dup@example.com"
+            let p1 = NewSignupPayload(firstName: "John", lastName: "Doe", email: email,
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: "9876543210")
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(p1)
+            })
+            let p2 = NewSignupPayload(firstName: "Jane", lastName: "Doe", email: email,
+                password: "secret123", confirmPassword: "secret123", countryCode: "+44", contactNumber: "7890123456")
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(p2)
+            }, afterResponse: { res async in
+                #expect(res.status == .conflict)
+            })
+        }
+    }
+
+    @Test("Signup: duplicate phone number returns 409")
+    func testSignupDuplicatePhone() async throws {
+        try await withApp { app in
+            let phone = "9876543210"
+            let p1 = NewSignupPayload(firstName: "John", lastName: "Doe", email: "john1@example.com",
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: phone)
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(p1)
+            })
+            let p2 = NewSignupPayload(firstName: "Jane", lastName: "Doe", email: "jane1@example.com",
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: phone)
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(p2)
+            }, afterResponse: { res async in
+                #expect(res.status == .conflict)
+            })
+        }
+    }
+
+    // MARK: =========================================================
+    // MARK: - Login Tests
+    // MARK: =========================================================
+
+    @Test("Login: valid student login returns role in response")
+    func testLoginReturnsRole() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "login@example.com", on: app)
+            let loginPayload = ["email": "login@example.com", "password": "secret123"]
             try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
                 try req.content.encode(loginPayload)
             }, afterResponse: { res async in
                 #expect(res.status == .ok)
                 do {
-                    let loginResponse = try res.content.decode(LoginResponse.self)
-                    #expect(loginResponse.user.email == "karthickt@example.com")
-                    #expect(!loginResponse.token.token.isEmpty)
+                    let body = try res.content.decode(LoginResponseTest.self)
+                    #expect(body.user.role == "student")
+                    #expect(!body.token.token.isEmpty)
                 } catch {
-                    XCTFail("Failed to decode LoginResponse: \(error)")
+                    XCTFail("Failed to decode login response: \(error)")
                 }
             })
         }
     }
 
-    @Test("Test Logout Route")
-    func testLogout() async throws {
+    @Test("Login: wrong password returns 401")
+    func testLoginWrongPassword() async throws {
         try await withApp { app in
-            let signupPayload = ["name": "Karthick", "email": "karthickt@example.com", "password": "secret123"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(signupPayload)
-            })
-
-            var token: String = ""
-            let loginPayload = ["email": "karthickt@example.com", "password": "secret123"]
+            _ = try await registerStudent(email: "wrongpw@example.com", on: app)
+            let loginPayload = ["email": "wrongpw@example.com", "password": "wrongpassword1"]
             try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
                 try req.content.encode(loginPayload)
-            }, afterResponse: { res async throws in
-                #expect(res.status == .ok)
-                let loginResponse = try res.content.decode(LoginResponse.self)
-                token = loginResponse.token.token
+            }, afterResponse: { res async in
+                #expect(res.status == .unauthorized)
             })
+        }
+    }
 
+    @Test("Login: non-existent email returns 401 (enumeration safe)")
+    func testLoginNonExistentEmail() async throws {
+        try await withApp { app in
+            let loginPayload = ["email": "ghost@example.com", "password": "secret123"]
+            try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
+                try req.content.encode(loginPayload)
+            }, afterResponse: { res async in
+                #expect(res.status == .unauthorized)
+            })
+        }
+    }
+
+    @Test("Login: suspended account returns 401 (no status leak)")
+    func testLoginSuspendedAccount() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "suspended@example.com", on: app)
+            // Directly suspend the account in the DB
+            if let student = try await Student.query(on: app.db)
+                .filter(\.$email == "suspended@example.com").first() {
+                student.status = .suspended
+                try await student.save(on: app.db)
+            }
+            let loginPayload = ["email": "suspended@example.com", "password": "secret123"]
+            try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
+                try req.content.encode(loginPayload)
+            }, afterResponse: { res async in
+                #expect(res.status == .unauthorized)
+            })
+        }
+    }
+
+    @Test("Login: inactive account returns 401 (no status leak)")
+    func testLoginInactiveAccount() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "inactive@example.com", on: app)
+            if let student = try await Student.query(on: app.db)
+                .filter(\.$email == "inactive@example.com").first() {
+                student.status = .inactive
+                try await student.save(on: app.db)
+            }
+            let loginPayload = ["email": "inactive@example.com", "password": "secret123"]
+            try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
+                try req.content.encode(loginPayload)
+            }, afterResponse: { res async in
+                #expect(res.status == .unauthorized)
+            })
+        }
+    }
+
+    // MARK: =========================================================
+    // MARK: - Logout Tests
+    // MARK: =========================================================
+
+    @Test("Logout: valid token succeeds")
+    func testLogout() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "logout@example.com", on: app)
+            let token = try await login(email: "logout@example.com", password: "secret123", on: app)
             try await app.testing().test(.POST, "auth/logout", beforeRequest: { req in
                 req.headers.bearerAuthorization = .init(token: token)
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
-                let logoutResponse = try res.content.decode(LogoutResponse.self)
+                let logoutResponse = try res.content.decode(LogoutResponseTest.self)
                 #expect(logoutResponse.message == "Logout successful")
             })
         }
     }
 
-    @Test("Test Logout Requires Authorization Header")
+    @Test("Logout: no token returns 401")
     func testLogoutRequiresAuth() async throws {
         try await withApp { app in
             try await app.testing().test(.POST, "auth/logout", afterResponse: { res async in
@@ -115,30 +468,16 @@ struct StudentAppBackendTests {
         }
     }
 
-    @Test("Test Logout Token Cannot Be Reused")
+    @Test("Logout: revoked token cannot be reused")
     func testLogoutRevokedToken() async throws {
         try await withApp { app in
-            let signupPayload = ["name": "Karthick", "email": "karthickt@example.com", "password": "secret123"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(signupPayload)
-            })
-
-            var token: String = ""
-            let loginPayload = ["email": "karthickt@example.com", "password": "secret123"]
-            try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
-                try req.content.encode(loginPayload)
-            }, afterResponse: { res async throws in
-                #expect(res.status == .ok)
-                let loginResponse = try res.content.decode(LoginResponse.self)
-                token = loginResponse.token.token
-            })
-
+            _ = try await registerStudent(email: "revoke@example.com", on: app)
+            let token = try await login(email: "revoke@example.com", password: "secret123", on: app)
             try await app.testing().test(.POST, "auth/logout", beforeRequest: { req in
                 req.headers.bearerAuthorization = .init(token: token)
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
-
             try await app.testing().test(.POST, "auth/logout", beforeRequest: { req in
                 req.headers.bearerAuthorization = .init(token: token)
             }, afterResponse: { res async throws in
@@ -147,236 +486,95 @@ struct StudentAppBackendTests {
         }
     }
 
-    @Test("Test GraphQL Signup Mutation")
-    func testGraphQLSignup() async throws {
+    // MARK: =========================================================
+    // MARK: - Resource Authorization Tests (GET /students/:id)
+    // MARK: =========================================================
+
+    @Test("Student can access own record")
+    func testStudentCanAccessOwnRecord() async throws {
         try await withApp { app in
-            let payload = GraphQLSignupRequest(
-                query: """
-                mutation Signup($input: StudentGraphQLCreateInput!) {
-                  signup(input: $input) {
-                    id
-                    name
-                    email
-                  }
-                }
-                """,
-                variables: .init(
-                    input: .init(
-                        name: "Graph User",
-                        email: "graphql@example.com",
-                        password: "secret123"
-                    )
-                )
-            )
-
-            try await app.testing().test(.POST, "graphql", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-                do {
-                    let body = try res.content.decode(GraphQLMutationResponse<StudentPublic>.self)
-                    #expect(body.data?.signup.email == "graphql@example.com")
-                    #expect(body.errors?.isEmpty != false)
-                } catch {
-                    XCTFail("Failed to decode GraphQL response: \(error)")
-                }
-            })
-        }
-    }
-
-    // MARK: - REST Validation Tests
-
-    @Test("REST: Empty name rejected with 400")
-    func testRestSignupEmptyName() async throws {
-        try await withApp { app in
-            let payload = ["name": "", "email": "test@example.com", "password": "password123"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .badRequest)
-            })
-        }
-    }
-
-    @Test("REST: Name exceeding max length rejected")
-    func testRestSignupNameTooLong() async throws {
-        try await withApp { app in
-            let longName = String(repeating: "a", count: 101)
-            let payload = ["name": longName, "email": "test@example.com", "password": "password123"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .badRequest)
-            })
-        }
-    }
-
-    @Test("REST: Malformed email rejected")
-    func testRestSignupMalformedEmail() async throws {
-        try await withApp { app in
-            let payload = ["name": "TestUser", "email": "not-an-email", "password": "password123"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .badRequest)
-            })
-        }
-    }
-
-    @Test("REST: Email exceeding max length rejected")
-    func testRestSignupEmailTooLong() async throws {
-        try await withApp { app in
-            let longEmail = String(repeating: "a", count: 200) + "@example.com"
-            let payload = ["name": "TestUser", "email": longEmail, "password": "password123"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .badRequest)
-            })
-        }
-    }
-
-    @Test("REST: Password too short rejected")
-    func testRestSignupPasswordTooShort() async throws {
-        try await withApp { app in
-            let payload = ["name": "TestUser", "email": "test@example.com", "password": "pass12"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .badRequest)
-            })
-        }
-    }
-
-    @Test("REST: Password without numbers rejected")
-    func testRestSignupPasswordNoNumbers() async throws {
-        try await withApp { app in
-            let payload = ["name": "TestUser", "email": "test@example.com", "password": "passwordonly"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .badRequest)
-            })
-        }
-    }
-
-    @Test("REST: Password without letters rejected")
-    func testRestSignupPasswordNoLetters() async throws {
-        try await withApp { app in
-            let payload = ["name": "TestUser", "email": "test@example.com", "password": "12345678"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .badRequest)
-            })
-        }
-    }
-
-    @Test("REST: Malformed phone number rejected")
-    func testRestSignupMalformedPhoneNumber() async throws {
-        try await withApp { app in
-            let payload = ["name": "TestUser", "email": "test@example.com", "password": "password123", "phoneNumber": "phone#@number"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .badRequest)
-            })
-        }
-    }
-
-    @Test("REST: Phone number too short rejected")
-    func testRestSignupPhoneNumberTooShort() async throws {
-        try await withApp { app in
-            let payload = ["name": "TestUser", "email": "test@example.com", "password": "password123", "phoneNumber": "12345"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .badRequest)
-            })
-        }
-    }
-
-    @Test("REST: Phone number too long rejected")
-    func testRestSignupPhoneNumberTooLong() async throws {
-        try await withApp { app in
-            let longPhone = String(repeating: "1", count: 21)
-            let payload = ["name": "TestUser", "email": "test@example.com", "password": "password123", "phoneNumber": longPhone]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .badRequest)
-            })
-        }
-    }
-
-    @Test("REST: Valid signup payload accepted")
-    func testRestSignupValidPayload() async throws {
-        try await withApp { app in
-            let payload = ["name": "John Doe", "email": "john@example.com", "password": "password123", "phoneNumber": "+1-234-567-8900"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
+            let created = try await registerStudent(email: "own@example.com", on: app)
+            let token = try await login(email: "own@example.com", password: "secret123", on: app)
+            guard let id = created.id else { XCTFail("No ID"); return }
+            try await app.testing().test(.GET, "students/\(id)", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
             }, afterResponse: { res async in
                 #expect(res.status == .ok)
             })
         }
     }
 
-    @Test("REST: Valid signup with optional fields nil")
-    func testRestSignupValidPayloadOptionalFieldsNil() async throws {
+    @Test("Student cannot access another student's record (IDOR prevention)")
+    func testStudentCannotAccessOtherStudentRecord() async throws {
         try await withApp { app in
-            let payload = ["name": "John Doe", "email": "john2@example.com", "password": "password123"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
+            _ = try await registerStudent(email: "studentA@example.com", contactNumber: "9876500001", on: app)
+            let studentB = try await registerStudent(email: "studentB@example.com", contactNumber: "9876500002", on: app)
+            let tokenA = try await login(email: "studentA@example.com", password: "secret123", on: app)
+            guard let idB = studentB.id else { XCTFail("No ID"); return }
+            try await app.testing().test(.GET, "students/\(idB)", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: tokenA)
+            }, afterResponse: { res async in
+                #expect(res.status == .forbidden)
+            })
+        }
+    }
+
+    @Test("Unauthenticated request to GET /students/:id returns 401")
+    func testUnauthenticatedStudentAccess() async throws {
+        try await withApp { app in
+            let created = try await registerStudent(email: "unauth@example.com", on: app)
+            guard let id = created.id else { XCTFail("No ID"); return }
+            try await app.testing().test(.GET, "students/\(id)", afterResponse: { res async in
+                #expect(res.status == .unauthorized)
+            })
+        }
+    }
+
+    @Test("Admin can access any student record")
+    func testAdminCanAccessAnyStudentRecord() async throws {
+        try await withApp { app in
+            let student = try await registerStudent(email: "student@rbac.com", on: app)
+            let adminID = try await seedUser(role: "admin", email: "admin@rbac.com", on: app.db)
+            let adminToken = try await login(email: "admin@rbac.com", password: "secret123", on: app)
+            guard let studentID = student.id else { XCTFail("No ID"); return }
+            _ = adminID
+            try await app.testing().test(.GET, "students/\(studentID)", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: adminToken)
             }, afterResponse: { res async in
                 #expect(res.status == .ok)
             })
         }
     }
 
-    // MARK: - Phone Number Format Tests (REST)
+    // MARK: =========================================================
+    // MARK: - Forgot Password Tests
+    // MARK: =========================================================
 
-    @Test("REST: Phone number with plus prefix accepted")
-    func testRestSignupPhoneWithPlus() async throws {
+    @Test("Forgot password: enumeration-safe response for unknown email")
+    func testForgotPasswordEnumerationSafe() async throws {
         try await withApp { app in
-            let payload = ["name": "TestUser", "email": "test+plus@example.com", "password": "password123", "phoneNumber": "+12345678901"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+            let payload = ["email": "unknown@example.com"]
+            try await app.testing().test(.POST, "auth/forgot-password", beforeRequest: { req in
                 try req.content.encode(payload)
-            }, afterResponse: { res async in
+            }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
+                let body = try res.content.decode(ForgotPasswordResponseTest.self)
+                #expect(body.success == true)
+                #expect(body.message == ForgotPasswordResponse.forgotPasswordSubmitted.message)
             })
         }
     }
 
-    @Test("REST: Phone number with dashes accepted")
-    func testRestSignupPhoneWithDashes() async throws {
-        try await withApp { app in
-            let payload = ["name": "TestUser", "email": "test+dash@example.com", "password": "password123", "phoneNumber": "1-234-567-8901"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-            })
-        }
-    }
-
-    @Test("REST: Phone number with spaces accepted")
-    func testRestSignupPhoneWithSpaces() async throws {
-        try await withApp { app in
-            let payload = ["name": "TestUser", "email": "test+space@example.com", "password": "password123", "phoneNumber": "1 234 567 8901"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-            })
-        }
-    }
+    // MARK: =========================================================
+    // MARK: - Health Endpoint Tests
+    // MARK: =========================================================
 
     @Test("Health live endpoint returns ok")
     func testHealthLive() async throws {
         try await withApp { app in
             try await app.testing().test(.GET, "health/live", afterResponse: { res async throws in
                 #expect(res.status == .ok)
-                let body = try res.content.decode(HealthResponse.self)
+                let body = try res.content.decode(HealthResponseTest.self)
                 #expect(body.status == "ok")
             })
         }
@@ -387,13 +585,112 @@ struct StudentAppBackendTests {
         try await withApp { app in
             try await app.testing().test(.GET, "health/ready", afterResponse: { res async throws in
                 #expect(res.status == .ok)
-                let body = try res.content.decode(HealthResponse.self)
+                let body = try res.content.decode(HealthResponseTest.self)
                 #expect(body.status == "ready")
             })
         }
     }
 
-    @Test("GraphQL students query requires authentication")
+    // MARK: =========================================================
+    // MARK: - GraphQL Tests
+    // MARK: =========================================================
+
+    @Test("GraphQL: signupStudent mutation creates student role")
+    func testGraphQLSignupStudent() async throws {
+        try await withApp { app in
+            let payload = GraphQLSignupStudentRequest(
+                query: """
+                mutation SignupStudent($input: StudentSignupInput!) {
+                  signupStudent(input: $input) {
+                    id email firstName lastName role
+                  }
+                }
+                """,
+                variables: .init(input: .init(
+                    firstName: "GraphQL",
+                    lastName: "User",
+                    email: "gqlstudent@example.com",
+                    password: "secret123",
+                    confirmPassword: "secret123",
+                    countryCode: "+91",
+                    contactNumber: "9988776655"
+                ))
+            )
+            try await app.testing().test(.POST, "graphql", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+                do {
+                    let body = try res.content.decode(GraphQLSignupStudentResponse.self)
+                    #expect(body.data?.signupStudent.email == "gqlstudent@example.com")
+                    #expect(body.data?.signupStudent.role == "student")
+                    #expect(body.errors?.isEmpty != false)
+                } catch {
+                    XCTFail("Failed to decode GraphQL response: \(error)")
+                }
+            })
+        }
+    }
+
+    @Test("GraphQL: legacy signup mutation still works")
+    func testGraphQLLegacySignup() async throws {
+        try await withApp { app in
+            let payload = GraphQLLegacySignupRequest(
+                query: """
+                mutation Signup($input: StudentGraphQLCreateInput!) {
+                  signup(input: $input) { id name email role }
+                }
+                """,
+                variables: .init(input: .init(
+                    name: "Legacy User",
+                    email: "legacy@example.com",
+                    password: "secret123"
+                ))
+            )
+            try await app.testing().test(.POST, "graphql", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+                do {
+                    let body = try res.content.decode(GraphQLLegacySignupResponse.self)
+                    #expect(body.data?.signup.email == "legacy@example.com")
+                    #expect(body.data?.signup.role == "student")
+                } catch {
+                    XCTFail("Failed to decode GraphQL response: \(error)")
+                }
+            })
+        }
+    }
+
+    @Test("GraphQL: login mutation returns role in AuthPayload")
+    func testGraphQLLoginReturnsRole() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "gqllogin@example.com", on: app)
+
+            let loginPayload = GraphQLLoginRequest(
+                query: """
+                mutation Login($input: StudentGraphQLLoginInput!) {
+                  login(input: $input) { token user { email role } }
+                }
+                """,
+                variables: .init(input: .init(email: "gqllogin@example.com", password: "secret123"))
+            )
+            try await app.testing().test(.POST, "graphql", beforeRequest: { req in
+                try req.content.encode(loginPayload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+                do {
+                    let body = try res.content.decode(GraphQLLoginResponse.self)
+                    #expect(body.data?.login.token.isEmpty == false)
+                    #expect(body.data?.login.user.role == "student")
+                } catch {
+                    XCTFail("Failed to decode GraphQL login response: \(error)")
+                }
+            })
+        }
+    }
+
+    @Test("GraphQL: students query requires authentication")
     func testGraphQLStudentsRequiresAuth() async throws {
         try await withApp { app in
             let payload = GraphQLQueryRequest(query: "{ students { id name email } }")
@@ -407,122 +704,352 @@ struct StudentAppBackendTests {
         }
     }
 
-    @Test("GraphQL students query returns authenticated student only")
-    func testGraphQLStudentsWithAuth() async throws {
+    @Test("GraphQL: students query with student JWT returns only own record")
+    func testGraphQLStudentsReturnsSelfOnly() async throws {
         try await withApp { app in
-            let signupPayload = ["name": "Graph Auth", "email": "graphauth@example.com", "password": "secret123"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(signupPayload)
-            })
+            // Create two students
+            _ = try await registerStudent(email: "gql_a@example.com", contactNumber: "9100000001", on: app)
+            _ = try await registerStudent(email: "gql_b@example.com", contactNumber: "9100000002", on: app)
 
-            var token = ""
-            let loginPayload = ["email": "graphauth@example.com", "password": "secret123"]
-            try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
-                try req.content.encode(loginPayload)
-            }, afterResponse: { res async throws in
-                let loginResponse = try res.content.decode(LoginResponse.self)
-                token = loginResponse.token.token
-            })
-
-            let payload = GraphQLQueryRequest(query: "{ students { id name email } }")
+            let token = try await login(email: "gql_a@example.com", password: "secret123", on: app)
+            let payload = GraphQLQueryRequest(query: "{ students { id email } }")
             try await app.testing().test(.POST, "graphql", beforeRequest: { req in
                 req.headers.bearerAuthorization = .init(token: token)
                 try req.content.encode(payload)
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
                 let body = try res.content.decode(GraphQLStudentsResponse.self)
+                // Student should only see their own record
                 #expect(body.data?.students.count == 1)
-                #expect(body.data?.students.first?.email == "graphauth@example.com")
+                #expect(body.data?.students.first?.email == "gql_a@example.com")
             })
         }
     }
 
-    @Test("Forgot password uses enumeration-safe response")
-    func testForgotPasswordEnumerationSafe() async throws {
+    @Test("GraphQL: admin JWT returns all students")
+    func testGraphQLAdminSeesAllStudents() async throws {
         try await withApp { app in
-            let payload = ["email": "unknown@example.com"]
-            try await app.testing().test(.POST, "auth/forgot-password", beforeRequest: { req in
+            _ = try await registerStudent(email: "s1@rbac.com", contactNumber: "9200000001", on: app)
+            _ = try await registerStudent(email: "s2@rbac.com", contactNumber: "9200000002", on: app)
+            _ = try await seedUser(role: "admin", email: "admin2@rbac.com", on: app.db)
+            let adminToken = try await login(email: "admin2@rbac.com", password: "secret123", on: app)
+
+            let payload = GraphQLQueryRequest(query: "{ students { id email role } }")
+            try await app.testing().test(.POST, "graphql", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: adminToken)
                 try req.content.encode(payload)
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
-                let body = try res.content.decode(ForgotPasswordResponse.self)
-                #expect(body.success == true)
-                #expect(body.message == ForgotPasswordResponse.forgotPasswordSubmitted.message)
+                let body = try res.content.decode(GraphQLStudentsResponse.self)
+                // Admin sees all 3 (2 students + 1 admin)
+                #expect((body.data?.students.count ?? 0) >= 3)
             })
+        }
+    }
+
+    // MARK: =========================================================
+    // MARK: - Validation Utilities Tests (REST legacy path)
+    // MARK: =========================================================
+
+    @Test("REST: Empty name rejected with 400")
+    func testRestSignupEmptyName() async throws {
+        try await withApp { app in
+            let payload = ["name": "", "email": "test@example.com", "password": "password123"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("REST: Name exceeding max length rejected")
+    func testRestSignupNameTooLong() async throws {
+        try await withApp { app in
+            let longName = String(repeating: "a", count: 101)
+            let payload = ["name": longName, "email": "test@example.com", "password": "password123"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("REST: Malformed email rejected")
+    func testRestSignupMalformedEmail() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "not-an-email", "password": "password123"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("REST: Email exceeding max length rejected")
+    func testRestSignupEmailTooLong() async throws {
+        try await withApp { app in
+            let longEmail = String(repeating: "a", count: 200) + "@example.com"
+            let payload = ["name": "TestUser", "email": longEmail, "password": "password123"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("REST: Password too short rejected")
+    func testRestSignupPasswordTooShort() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "test@example.com", "password": "pass12"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("REST: Password without numbers rejected")
+    func testRestSignupPasswordNoNumbers() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "test@example.com", "password": "passwordonly"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("REST: Password without letters rejected")
+    func testRestSignupPasswordNoLetters() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "test@example.com", "password": "12345678"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("REST: Malformed phone number rejected")
+    func testRestSignupMalformedPhoneNumber() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "test@example.com", "password": "password123", "phoneNumber": "phone#@number"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("REST: Phone number too short rejected")
+    func testRestSignupPhoneNumberTooShort() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "test@example.com", "password": "password123", "phoneNumber": "12345"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("REST: Phone number too long rejected")
+    func testRestSignupPhoneNumberTooLong() async throws {
+        try await withApp { app in
+            let longPhone = String(repeating: "1", count: 21)
+            let payload = ["name": "TestUser", "email": "test@example.com", "password": "password123", "phoneNumber": longPhone]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("REST: Valid signup payload accepted")
+    func testRestSignupValidPayload() async throws {
+        try await withApp { app in
+            let payload = ["name": "John Doe", "email": "john@example.com", "password": "password123", "phoneNumber": "+1-234-567-8900"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .ok) })
+        }
+    }
+
+    @Test("REST: Valid signup with optional fields nil")
+    func testRestSignupValidPayloadOptionalFieldsNil() async throws {
+        try await withApp { app in
+            let payload = ["name": "John Doe", "email": "john2@example.com", "password": "password123"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .ok) })
+        }
+    }
+
+    @Test("REST: Phone number with plus prefix accepted")
+    func testRestSignupPhoneWithPlus() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "test+plus@example.com", "password": "password123", "phoneNumber": "+12345678901"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .ok) })
+        }
+    }
+
+    @Test("REST: Phone number with dashes accepted")
+    func testRestSignupPhoneWithDashes() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "test+dash@example.com", "password": "password123", "phoneNumber": "1-234-567-8901"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .ok) })
+        }
+    }
+
+    @Test("REST: Phone number with spaces accepted")
+    func testRestSignupPhoneWithSpaces() async throws {
+        try await withApp { app in
+            let payload = ["name": "TestUser", "email": "test+space@example.com", "password": "password123", "phoneNumber": "1 234 567 8901"]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .ok) })
         }
     }
 }
 
-// MARK: - Test Response Types
+// MARK: - Test Request/Response Types
 
-import Vapor
+struct NewSignupPayload: Content {
+    let firstName: String
+    let lastName: String
+    let email: String
+    let password: String
+    let confirmPassword: String
+    let countryCode: String
+    let contactNumber: String
+}
 
-struct StudentPublic: Content {
+struct StudentPublicResponse: Content {
     var id: UUID?
+    var firstName: String?
+    var lastName: String?
     var name: String
     var email: String
+    var role: String
+    var contactNumber: String?
     var dob: Date?
     var phoneNumber: String?
 }
 
-struct LoginResponse: Content {
-    var user: StudentPublic
-    var token: TokenResponse
+struct LoginResponseTest: Content {
+    var user: StudentPublicResponse
+    var token: TokenResponseTest
 }
 
-struct TokenResponse: Content {
+struct TokenResponseTest: Content {
     var token: String
 }
 
-struct GraphQLMutationResponse<T: Content>: Content {
-    var data: GraphQLMutationData<T>?
-    var errors: [GraphQLErrorPayload]?
-}
-
-struct GraphQLMutationData<T: Content>: Content {
-    var signup: T
-}
-
-struct GraphQLErrorPayload: Content {
-    var message: String
-}
-
-struct GraphQLSignupRequest: Content {
-    let query: String
-    let variables: GraphQLSignupVariables
-}
-
-struct GraphQLSignupVariables: Content {
-    let input: GraphQLSignupInput
-}
-
-struct GraphQLSignupInput: Content {
-    let name: String
-    let email: String
-    let password: String
-}
-
-struct LogoutResponse: Content {
+struct LogoutResponseTest: Content {
     let message: String
 }
 
-struct HealthResponse: Content {
+struct HealthResponseTest: Content {
     let status: String
+}
+
+struct ForgotPasswordResponseTest: Content {
+    let success: Bool
+    let message: String
 }
 
 struct GraphQLQueryRequest: Content {
     let query: String
 }
 
+struct GraphQLErrorPayload: Content {
+    var message: String
+}
+
 struct GraphQLErrorOnlyResponse: Content {
     let errors: [GraphQLErrorPayload]?
 }
+
+// MARK: - GraphQL Student Signup
+
+struct GraphQLSignupStudentRequest: Content {
+    let query: String
+    let variables: GraphQLSignupStudentVars
+}
+struct GraphQLSignupStudentVars: Content {
+    let input: GraphQLSignupStudentInput
+}
+struct GraphQLSignupStudentInput: Content {
+    let firstName: String
+    let lastName: String
+    let email: String
+    let password: String
+    let confirmPassword: String
+    let countryCode: String
+    let contactNumber: String
+}
+struct GraphQLSignupStudentResponse: Content {
+    var data: GraphQLSignupStudentData?
+    var errors: [GraphQLErrorPayload]?
+}
+struct GraphQLSignupStudentData: Content {
+    var signupStudent: StudentPublicResponse
+}
+
+// MARK: - GraphQL Legacy Signup
+
+struct GraphQLLegacySignupRequest: Content {
+    let query: String
+    let variables: GraphQLLegacySignupVars
+}
+struct GraphQLLegacySignupVars: Content {
+    let input: GraphQLLegacySignupInput
+}
+struct GraphQLLegacySignupInput: Content {
+    let name: String
+    let email: String
+    let password: String
+}
+struct GraphQLLegacySignupResponse: Content {
+    var data: GraphQLLegacySignupData?
+    var errors: [GraphQLErrorPayload]?
+}
+struct GraphQLLegacySignupData: Content {
+    var signup: StudentPublicResponse
+}
+
+// MARK: - GraphQL Login
+
+struct GraphQLLoginRequest: Content {
+    let query: String
+    let variables: GraphQLLoginVars
+}
+struct GraphQLLoginVars: Content {
+    let input: GraphQLLoginInput
+}
+struct GraphQLLoginInput: Content {
+    let email: String
+    let password: String
+}
+struct GraphQLLoginResponse: Content {
+    var data: GraphQLLoginData?
+    var errors: [GraphQLErrorPayload]?
+}
+struct GraphQLLoginData: Content {
+    var login: GraphQLAuthPayload
+}
+struct GraphQLAuthPayload: Content {
+    var token: String
+    var user: StudentPublicResponse
+}
+
+// MARK: - GraphQL Students Query
 
 struct GraphQLStudentsResponse: Content {
     let data: GraphQLStudentsData?
     let errors: [GraphQLErrorPayload]?
 }
-
 struct GraphQLStudentsData: Content {
-    let students: [StudentPublic]
+    let students: [StudentPublicResponse]
 }
+
+// MARK: - Legacy Test Aliases (preserved for backward compat of test types)
+
+typealias StudentPublic = StudentPublicResponse
+typealias LoginResponse = LoginResponseTest
+typealias TokenResponse = TokenResponseTest
+typealias LogoutResponse = LogoutResponseTest
+typealias HealthResponse = HealthResponseTest
