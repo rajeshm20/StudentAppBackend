@@ -32,17 +32,21 @@ private func shouldEnableTLS(certPath: String, keyPath: String) -> Bool {
     return tlsRequested && hasTLSFiles
 }
 
-private func databaseTLSConfiguration(for environment: Environment) -> TLSConfiguration? {
+func databaseTLSConfiguration(for environment: Environment) -> TLSConfiguration? {
     switch AppConfig.databaseTLSMode(for: environment) {
     case .disable:
         return nil
     case .verifyFull:
         var tls = TLSConfiguration.makeClientConfiguration()
         tls.certificateVerification = .fullVerification
+        tls.minimumTLSVersion = (try? AppConfig.minimumTLSVersion(for: environment)) ?? .tlsv12
+        tls.cipherSuites = AppConfig.tlsCipherSuites(for: environment)
         return tls
     case .noVerify:
         var tls = TLSConfiguration.makeClientConfiguration()
         tls.certificateVerification = .none
+        tls.minimumTLSVersion = (try? AppConfig.minimumTLSVersion(for: environment)) ?? .tlsv12
+        tls.cipherSuites = AppConfig.tlsCipherSuites(for: environment)
         return tls
     }
 }
@@ -109,7 +113,7 @@ private func configureMigrations(_ app: Application) throws {
     }
 }
 
-private func configureTLS(_ app: Application) {
+func configureTLS(_ app: Application) throws {
     guard app.environment != .testing else {
         return
     }
@@ -131,14 +135,25 @@ private func configureTLS(_ app: Application) {
     do {
         let certs = try NIOSSLCertificate.fromPEMFile(certPath).map { NIOSSLCertificateSource.certificate($0) }
         let nioPrivateKey = try NIOSSLPrivateKey(file: keyPath, format: .pem)
-        let tls = TLSConfiguration.makeServerConfiguration(
+        let minTLSVersion = try AppConfig.minimumTLSVersion(for: app.environment)
+        let cipherSuites = AppConfig.tlsCipherSuites(for: app.environment)
+
+        var tls = TLSConfiguration.makeServerConfiguration(
             certificateChain: certs,
             privateKey: .privateKey(nioPrivateKey)
         )
+        tls.minimumTLSVersion = minTLSVersion
+        tls.cipherSuites = cipherSuites
+
         app.http.server.configuration.tlsConfiguration = tls
-        app.logger.notice("Loaded \(certs.count) TLS certificate(s)")
+        app.logger.notice("Loaded \(certs.count) TLS certificate(s). Enforcing minimum TLS version: \(minTLSVersion) with hardened cipher suites.")
     } catch {
-        app.logger.warning("TLS certificates could not be loaded. Continuing without HTTPS: \(error)")
+        if app.environment == .production {
+            app.logger.error("Failed to configure TLS in production: \(error)")
+            throw error
+        } else {
+            app.logger.warning("TLS certificates could not be loaded. Continuing without HTTPS: \(error)")
+        }
     }
 }
 
@@ -148,7 +163,7 @@ public func configure(_ app: Application) throws {
     try configureMiddleware(app)
     try configureJWT(app)
     configureEmail(app)
-    configureTLS(app)
+    try configureTLS(app)
     try configureMigrations(app)
     try routes(app)
 }
