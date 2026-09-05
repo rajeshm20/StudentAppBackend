@@ -712,7 +712,7 @@ struct StudentAppBackendTests {
             _ = try await registerStudent(email: "gql_b@example.com", contactNumber: "9100000002", on: app)
 
             let token = try await login(email: "gql_a@example.com", password: "secret123", on: app)
-            let payload = GraphQLQueryRequest(query: "{ students { id email } }")
+            let payload = GraphQLQueryRequest(query: "{ students { id name email role } }")
             try await app.testing().test(.POST, "graphql", beforeRequest: { req in
                 req.headers.bearerAuthorization = .init(token: token)
                 try req.content.encode(payload)
@@ -734,7 +734,7 @@ struct StudentAppBackendTests {
             _ = try await seedUser(role: "admin", email: "admin2@rbac.com", on: app.db)
             let adminToken = try await login(email: "admin2@rbac.com", password: "secret123", on: app)
 
-            let payload = GraphQLQueryRequest(query: "{ students { id email role } }")
+            let payload = GraphQLQueryRequest(query: "{ students { id name email role } }")
             try await app.testing().test(.POST, "graphql", beforeRequest: { req in
                 req.headers.bearerAuthorization = .init(token: adminToken)
                 try req.content.encode(payload)
@@ -785,7 +785,7 @@ struct StudentAppBackendTests {
     @Test("REST: Email exceeding max length rejected")
     func testRestSignupEmailTooLong() async throws {
         try await withApp { app in
-            let longEmail = String(repeating: "a", count: 200) + "@example.com"
+            let longEmail = String(repeating: "a", count: 250) + "@example.com"
             let payload = ["name": "TestUser", "email": longEmail, "password": "password123"]
             try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
                 try req.content.encode(payload)
@@ -901,6 +901,411 @@ struct StudentAppBackendTests {
             try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
                 try req.content.encode(payload)
             }, afterResponse: { res async in #expect(res.status == .ok) })
+        }
+    }
+
+    // MARK: =========================================================
+    // MARK: - Password Min-Length 8 Tests (new canonical endpoint)
+    // MARK: =========================================================
+
+    @Test("Signup: exactly 7-char password rejected (boundary below min-length 8)")
+    func testSignupPassword7CharsRejected() async throws {
+        try await withApp { app in
+            // 7 chars — one below the minimum of 8
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "pw7@example.com",
+                password: "abcd123", confirmPassword: "abcd123",
+                countryCode: "+91", contactNumber: "9876543210"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("Signup: exactly 8-char password accepted (at min-length boundary)")
+    func testSignupPassword8CharsAccepted() async throws {
+        try await withApp { app in
+            // Exactly 8 chars — exactly at the minimum
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "pw8@example.com",
+                password: "abcd1234", confirmPassword: "abcd1234",
+                countryCode: "+91", contactNumber: "9876543210"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .ok) })
+        }
+    }
+
+    @Test("Signup: password with only letters (no digits) rejected")
+    func testSignupNewEndpointPasswordNoDigits() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "nodig@example.com",
+                password: "onlyletters", confirmPassword: "onlyletters",
+                countryCode: "+91", contactNumber: "9876543210"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("Signup: password with only digits (no letters) rejected")
+    func testSignupNewEndpointPasswordNoLetters() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "nolet@example.com",
+                password: "12345678", confirmPassword: "12345678",
+                countryCode: "+91", contactNumber: "9876543210"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    // MARK: =========================================================
+    // MARK: - Country Code Edge Cases
+    // MARK: =========================================================
+
+    @Test("Signup: +1 (1-digit country code) is valid")
+    func testSignupCountryCodeOneDigit() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "cc1@example.com",
+                password: "secret123", confirmPassword: "secret123",
+                countryCode: "+1", contactNumber: "2025551234"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .ok) })
+        }
+    }
+
+    @Test("Signup: +9999 (4-digit country code) is valid")
+    func testSignupCountryCodeFourDigits() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "cc4@example.com",
+                password: "secret123", confirmPassword: "secret123",
+                countryCode: "+9999", contactNumber: "1234567"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .ok) })
+        }
+    }
+
+    @Test("Signup: 5-digit country code (+12345) is rejected")
+    func testSignupCountryCodeFiveDigitsRejected() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "cc5@example.com",
+                password: "secret123", confirmPassword: "secret123",
+                countryCode: "+12345", contactNumber: "9876543210"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("Signup: country code without + prefix is rejected")
+    func testSignupCountryCodeNoPlus() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "ccnoplus@example.com",
+                password: "secret123", confirmPassword: "secret123",
+                countryCode: "91", contactNumber: "9876543210"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("Signup: country code +0 (leading zero after +) is rejected")
+    func testSignupCountryCodeLeadingZero() async throws {
+        try await withApp { app in
+            // Leading zero is invalid — country codes start from +1
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "cc0@example.com",
+                password: "secret123", confirmPassword: "secret123",
+                countryCode: "+0", contactNumber: "9876543210"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    // MARK: =========================================================
+    // MARK: - Contact Number Edge Cases
+    // MARK: =========================================================
+
+    @Test("Signup: exactly 7-digit contact number is valid (min boundary)")
+    func testSignupContactNumber7Digits() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "cn7@example.com",
+                password: "secret123", confirmPassword: "secret123",
+                countryCode: "+1", contactNumber: "1234567"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .ok) })
+        }
+    }
+
+    @Test("Signup: exactly 15-digit contact number is valid (max boundary)")
+    func testSignupContactNumber15Digits() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "cn15@example.com",
+                password: "secret123", confirmPassword: "secret123",
+                countryCode: "+1", contactNumber: "123456789012345"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .ok) })
+        }
+    }
+
+    @Test("Signup: 6-digit contact number rejected (below min boundary)")
+    func testSignupContactNumber6DigitsRejected() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "cn6@example.com",
+                password: "secret123", confirmPassword: "secret123",
+                countryCode: "+91", contactNumber: "123456"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    @Test("Signup: 16-digit contact number rejected (above max boundary)")
+    func testSignupContactNumber16DigitsRejected() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "cn16@example.com",
+                password: "secret123", confirmPassword: "secret123",
+                countryCode: "+91", contactNumber: "1234567890123456"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+        }
+    }
+
+    // MARK: =========================================================
+    // MARK: - E.164 Normalization Tests
+    // MARK: =========================================================
+
+    @Test("Signup: E.164 normalization — UK +44 produces +44NNNN")
+    func testSignupE164NormalizationUK() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(
+                firstName: "Jane", lastName: "Smith", email: "uk@example.com",
+                password: "secret123", confirmPassword: "secret123",
+                countryCode: "+44", contactNumber: "7911123456"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+                do {
+                    let body = try res.content.decode(StudentPublicResponse.self)
+                    #expect(body.contactNumber == "+447911123456")
+                } catch {
+                    XCTFail("Failed to decode response: \(error)")
+                }
+            })
+        }
+    }
+
+    @Test("Signup: E.164 normalization — US +1 produces +1NNNN")
+    func testSignupE164NormalizationUS() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(
+                firstName: "Bob", lastName: "Jones", email: "us@example.com",
+                password: "secret123", confirmPassword: "secret123",
+                countryCode: "+1", contactNumber: "2025550178"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+                do {
+                    let body = try res.content.decode(StudentPublicResponse.self)
+                    #expect(body.contactNumber == "+12025550178")
+                } catch {
+                    XCTFail("Failed to decode response: \(error)")
+                }
+            })
+        }
+    }
+
+    // MARK: =========================================================
+    // MARK: - Response Field Correctness Tests
+    // MARK: =========================================================
+
+    @Test("Signup: name field is firstName + space + lastName")
+    func testSignupNameConcatenated() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(
+                firstName: "Alice", lastName: "Wonderland", email: "alice@example.com",
+                password: "secret123", confirmPassword: "secret123",
+                countryCode: "+91", contactNumber: "9876543210"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+                do {
+                    let body = try res.content.decode(StudentPublicResponse.self)
+                    #expect(body.name == "Alice Wonderland")
+                    #expect(body.firstName == "Alice")
+                    #expect(body.lastName == "Wonderland")
+                } catch {
+                    XCTFail("Failed to decode response: \(error)")
+                }
+            })
+        }
+    }
+
+    @Test("Signup: leading/trailing whitespace in firstName/lastName is trimmed")
+    func testSignupWhitespaceTrimmed() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(
+                firstName: "  Alice  ", lastName: "  Wonderland  ", email: "alice2@example.com",
+                password: "secret123", confirmPassword: "secret123",
+                countryCode: "+91", contactNumber: "9876543211"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+                do {
+                    let body = try res.content.decode(StudentPublicResponse.self)
+                    #expect(body.firstName == "Alice")
+                    #expect(body.lastName == "Wonderland")
+                    #expect(body.name == "Alice Wonderland")
+                } catch {
+                    XCTFail("Failed to decode response: \(error)")
+                }
+            })
+        }
+    }
+
+    @Test("Signup: email is normalized to lowercase")
+    func testSignupEmailNormalizedToLowercase() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "John.DOE@Example.COM",
+                password: "secret123", confirmPassword: "secret123",
+                countryCode: "+91", contactNumber: "9876543299"
+            )
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+                do {
+                    let body = try res.content.decode(StudentPublicResponse.self)
+                    #expect(body.email == "john.doe@example.com")
+                } catch {
+                    XCTFail("Failed to decode response: \(error)")
+                }
+            })
+        }
+    }
+
+    @Test("Signup: new account has status=active")
+    func testSignupNewAccountStatusIsActive() async throws {
+        try await withApp { app in
+            let payload = NewSignupPayload(
+                firstName: "Status", lastName: "Test", email: "status@example.com",
+                password: "secret123", confirmPassword: "secret123",
+                countryCode: "+91", contactNumber: "9876543212"
+            )
+            // Verify the DB record directly
+            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+            })
+            // Confirm student is active in DB
+            let student = try await Student.query(on: app.db)
+                .filter(\.$email == "status@example.com")
+                .first()
+            #expect(student != nil)
+            #expect(student?.status == .active)
+            #expect(student?.role == .student)
+        }
+    }
+
+    @Test("Login: response includes user role and is student for new signups")
+    func testLoginResponseIncludesRoleAndStatus() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "rolecheck@example.com", contactNumber: "9876599999", on: app)
+            let loginPayload = ["email": "rolecheck@example.com", "password": "secret123"]
+            try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
+                try req.content.encode(loginPayload)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+                do {
+                    let body = try res.content.decode(LoginResponseTest.self)
+                    #expect(body.user.role == "student")
+                    #expect(!body.token.token.isEmpty)
+                    // Email should be normalized in login response too
+                    #expect(body.user.email == "rolecheck@example.com")
+                } catch {
+                    XCTFail("Failed to decode login response: \(error)")
+                }
+            })
+        }
+    }
+
+    // MARK: =========================================================
+    // MARK: - Reset Password Min-Length 8 Tests
+    // MARK: =========================================================
+
+    @Test("Reset password: new password of exactly 7 chars is rejected (< 8 min)")
+    func testResetPasswordTooShort() async throws {
+        try await withApp { app in
+            // Use a fake session token — we expect 400 due to password length, not session validity
+            let payload = ResetPasswordPayload(
+                email: "anyone@example.com",
+                sessionToken: "fake-session-token",
+                newPassword: "abc1234",       // 7 chars
+                confirmPassword: "abc1234"
+            )
+            try await app.testing().test(.POST, "auth/reset-password", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                // Expect 400 (password too short check runs before session lookup)
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+
+    @Test("Reset password: mismatched passwords rejected before session lookup")
+    func testResetPasswordMismatch() async throws {
+        try await withApp { app in
+            let payload = ResetPasswordPayload(
+                email: "anyone@example.com",
+                sessionToken: "fake-session-token",
+                newPassword: "newPass12",
+                confirmPassword: "different1"
+            )
+            try await app.testing().test(.POST, "auth/reset-password", beforeRequest: { req in
+                try req.content.encode(payload)
+            }, afterResponse: { res async in
+                #expect(res.status == .badRequest)
+            })
         }
     }
 }
@@ -1053,3 +1458,12 @@ typealias LoginResponse = LoginResponseTest
 typealias TokenResponse = TokenResponseTest
 typealias LogoutResponse = LogoutResponseTest
 typealias HealthResponse = HealthResponseTest
+
+// MARK: - Reset Password Test Payload
+
+struct ResetPasswordPayload: Content {
+    let email: String
+    let sessionToken: String
+    let newPassword: String
+    let confirmPassword: String
+}
