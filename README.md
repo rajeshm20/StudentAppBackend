@@ -552,6 +552,36 @@ For local Caddy testing, use:
 https://localhost
 ```
 
+### TLS Hardening & Environment Configuration
+
+The backend enforces strict TLS 1.2 minimum versioning and forward-secret AEAD cipher suites (AES-GCM, ChaCha20-Poly1305) both at the Vapor HTTPS listener level and for MySQL client connections.
+
+#### Environment Variables
+
+| Variable | Default | Allowed Values | Purpose |
+| :--- | :--- | :--- | :--- |
+| `ENABLE_HTTPS` | `false` | `true`, `false`, `1`, `0` | Enables direct HTTPS listener on the Vapor server. |
+| `TLS_CERT` | `certs/cert.pem` | File path (prefer absolute in prod) | Path to PEM-encoded TLS certificate chain. |
+| `TLS_KEY` | `certs/key.pem` | File path (prefer absolute in prod) | Path to PEM-encoded private key. |
+| `TLS_MIN_VERSION` | `1.2` | `1.2`, `1.3`, `tlsv12`, `tlsv13` | Minimum TLS version required for TLS handshakes. Insecure versions (`1.0`, `1.1`) cause startup to abort in production. |
+| `TLS_CIPHER_SUITES` | *AEAD Suite List* | Colon-separated OpenSSL string | Overrides the default hardened TLS 1.2 cipher suites if required by specific corporate proxies. |
+| `DATABASE_TLS_MODE` | `verify-full` (prod) | `verify-full`, `no-verify`, `disable` | Enforces TLS versioning and verification when connecting to the MySQL database. |
+
+#### Default Hardened Cipher Suites (TLS 1.2)
+- `ECDHE-ECDSA-AES128-GCM-SHA256`
+- `ECDHE-RSA-AES128-GCM-SHA256`
+- `ECDHE-ECDSA-AES256-GCM-SHA384`
+- `ECDHE-RSA-AES256-GCM-SHA384`
+- `ECDHE-ECDSA-CHACHA20-POLY1305`
+- `ECDHE-RSA-CHACHA20-POLY1305`
+
+*Note: In TLS 1.3 (RFC 8446), cipher suites are managed independently by the TLS engine (NIOSSL/OpenSSL).*
+
+#### Operational & Production Guidelines
+1. **Absolute Paths in Production:** While relative paths work locally (`certs/cert.pem`), containerized deployments (Docker/Kubernetes) should use absolute paths (e.g., `/etc/ssl/certs/app.crt` and `/etc/ssl/private/app.key`) mounted via Secrets.
+2. **Fail-Fast Production Validation:** When `ENVIRONMENT=production` and `ENABLE_HTTPS=true`, `AppConfig.validateProductionSecrets()` executes on startup and will fail fast if certificate files are missing or if `TLS_MIN_VERSION` is set to an insecure protocol.
+3. **OpenSSL / OS Compatibility:** Production Linux images based on Ubuntu 24.04 (`noble`) bundle OpenSSL 3.0+, which provides native hardware acceleration and full support for both AES-GCM and ChaCha20-Poly1305.
+
 ---
 
 ## MySQL Setup on macOS
