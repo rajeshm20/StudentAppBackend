@@ -8,8 +8,16 @@ enum Entrypoint {
     static func main() async throws {
         var env = try Environment.detect()
         try LoggingSystem.bootstrap(from: &env)
-        
+
         let app = try await Application.make(env)
+
+        // Load .env file for local development (Xcode doesn't source shell env files).
+        // Uses Vapor's built-in DotEnvFile async API. No-op if the file doesn't exist.
+        // Existing process env vars take precedence (overwrite: false).
+        if app.environment == .development || app.environment == .testing {
+            await DotEnvFile.load(for: app.environment, fileio: app.fileio)
+        }
+
         
         // This attempts to install NIO as the Swift Concurrency global executor.
         // You can enable it if you'd like to reduce the amount of context switching between NIO and Swift Concurrency.
