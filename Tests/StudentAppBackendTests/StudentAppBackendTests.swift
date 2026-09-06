@@ -9,6 +9,7 @@ import Testing
 import Fluent
 import XCTest
 import Vapor
+import NIOSSL
 
 // MARK: - Test Suite
 
@@ -20,7 +21,7 @@ struct StudentAppBackendTests {
     private func withApp(_ test: (Application) async throws -> ()) async throws {
         let app = try await Application.make(.testing)
         do {
-            try await configure(app)
+            try configure(app)
             try await app.autoMigrate()
             try await test(app)
             try await app.autoRevert()
@@ -1306,6 +1307,151 @@ struct StudentAppBackendTests {
             }, afterResponse: { res async in
                 #expect(res.status == .badRequest)
             })
+        }
+    }
+
+    // MARK: - TLS and Cipher Suite Tests
+
+    @Test("TLS: Default minimum TLS version is TLS 1.2")
+    func defaultMinimumTLSVersionIsTLS12() throws {
+        unsetenv("TLS_MIN_VERSION")
+        let version = try AppConfig.minimumTLSVersion(for: .development)
+        #expect(version == .tlsv12)
+    }
+
+    @Test("TLS: Setting TLS_MIN_VERSION to 1.3 enforces TLS 1.3")
+    func tlsMinVersion13EnforcesTLS13() throws {
+        setenv("TLS_MIN_VERSION", "1.3", 1)
+        defer { unsetenv("TLS_MIN_VERSION") }
+
+        let version = try AppConfig.minimumTLSVersion(for: .development)
+        #expect(version == .tlsv13)
+    }
+
+    @Test("TLS: Insecure TLS versions (1.0, 1.1) are rejected in production")
+    func insecureTLSVersionRejectedInProduction() {
+        setenv("TLS_MIN_VERSION", "1.0", 1)
+        defer { unsetenv("TLS_MIN_VERSION") }
+
+        #expect(throws: Abort.self) {
+            try AppConfig.minimumTLSVersion(for: .production)
+        }
+    }
+
+    @Test("TLS: Insecure TLS versions fall back safely to 1.2 in non-production")
+    func insecureTLSVersionClampedInNonProduction() throws {
+        setenv("TLS_MIN_VERSION", "1.1", 1)
+        defer { unsetenv("TLS_MIN_VERSION") }
+
+        let version = try AppConfig.minimumTLSVersion(for: .development)
+        #expect(version == .tlsv12)
+    }
+
+    @Test("TLS: Unsupported TLS version string throws Abort error")
+    func unsupportedTLSVersionThrows() {
+        setenv("TLS_MIN_VERSION", "9.9", 1)
+        defer { unsetenv("TLS_MIN_VERSION") }
+
+        #expect(throws: Abort.self) {
+            try AppConfig.minimumTLSVersion(for: .development)
+        }
+    }
+
+    @Test("TLS: Default cipher suites contain only PFS and AEAD ciphers")
+    func defaultCipherSuitesAreHardened() {
+        let ciphers = AppConfig.defaultSecureCipherSuites
+        let suiteList = ciphers.split(separator: ":").map(String.init)
+
+        #expect(!suiteList.isEmpty)
+        for suite in suiteList {
+            // Must have forward secrecy (ECDHE)
+            #expect(suite.hasPrefix("ECDHE-"))
+            // Must be AEAD (GCM or Poly1305)
+            #expect(suite.contains("GCM") || suite.contains("POLY1305"))
+            // Must not contain CBC or obsolete algorithms
+            #expect(!suite.contains("CBC"))
+            #expect(!suite.contains("MD5"))
+            #expect(!suite.contains("RC4"))
+            #expect(!suite.contains("3DES"))
+            #expect(!suite.contains("DES"))
+        }
+    }
+
+    @Test("TLS: Custom cipher suites override via TLS_CIPHER_SUITES")
+    func customCipherSuitesOverride() {
+        let custom = "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384"
+        setenv("TLS_CIPHER_SUITES", custom, 1)
+        defer { unsetenv("TLS_CIPHER_SUITES") }
+
+        let active = AppConfig.tlsCipherSuites(for: .development)
+        #expect(active == custom)
+    }
+
+    @Test("TLS: Database client TLS configuration enforces minimum TLS 1.2 and hardened ciphers")
+    func databaseTLSConfigurationEnforcesTLS12() {
+        unsetenv("DATABASE_TLS_MODE")
+        let tls = databaseTLSConfiguration(for: .production)
+        #expect(tls != nil)
+        #expect(tls?.minimumTLSVersion == .tlsv12)
+        #expect(tls?.cipherSuites == AppConfig.defaultSecureCipherSuites)
+    }
+
+    @Test("TLS: Case-insensitivity and whitespace tolerance in TLS_MIN_VERSION")
+    func tlsVersionCaseInsensitiveAndWhitespaceTolerance() throws {
+        setenv("TLS_MIN_VERSION", "  TLS1.2  ", 1)
+        #expect(try AppConfig.minimumTLSVersion(for: .development) == .tlsv12)
+
+        setenv("TLS_MIN_VERSION", "tlsv1.3", 1)
+        #expect(try AppConfig.minimumTLSVersion(for: .development) == .tlsv13)
+
+        unsetenv("TLS_MIN_VERSION")
+    }
+
+    @Test("TLS: Empty or whitespace TLS_CIPHER_SUITES falls back to default hardened ciphers")
+    func emptyOrWhitespaceCipherSuitesFallsBack() {
+        setenv("TLS_CIPHER_SUITES", "   ", 1)
+        defer { unsetenv("TLS_CIPHER_SUITES") }
+
+        let active = AppConfig.tlsCipherSuites(for: .development)
+        #expect(active == AppConfig.defaultSecureCipherSuites)
+    }
+
+    @Test("TLS: Database TLS mode 'disable' returns nil configuration")
+    func databaseTLSDisabledReturnsNil() {
+        setenv("DATABASE_TLS_MODE", "disable", 1)
+        defer { unsetenv("DATABASE_TLS_MODE") }
+
+        let tls = databaseTLSConfiguration(for: .development)
+        #expect(tls == nil)
+    }
+
+    @Test("TLS: Database TLS mode 'no-verify' still enforces TLS 1.2 and hardened ciphers")
+    func databaseTLSNoVerifyEnforcesTLS12() {
+        setenv("DATABASE_TLS_MODE", "no-verify", 1)
+        defer { unsetenv("DATABASE_TLS_MODE") }
+
+        let tls = databaseTLSConfiguration(for: .development)
+        #expect(tls != nil)
+        #expect(tls?.minimumTLSVersion == .tlsv12)
+        #expect(tls?.certificateVerification == CertificateVerification.none)
+        #expect(tls?.cipherSuites == AppConfig.defaultSecureCipherSuites)
+    }
+
+    @Test("TLS: Production validation fails if ENABLE_HTTPS=true but certificates are missing")
+    func validateProductionSecretsFailsOnMissingCerts() {
+        setenv("DATABASE_PASSWORD", "secure_prod_password_123", 1)
+        setenv("ENABLE_HTTPS", "true", 1)
+        setenv("TLS_CERT", "non_existent_cert_path.pem", 1)
+        setenv("TLS_KEY", "non_existent_key_path.pem", 1)
+        defer {
+            unsetenv("DATABASE_PASSWORD")
+            unsetenv("ENABLE_HTTPS")
+            unsetenv("TLS_CERT")
+            unsetenv("TLS_KEY")
+        }
+
+        #expect(throws: Abort.self) {
+            try AppConfig.validateProductionSecrets(for: .production)
         }
     }
 }
