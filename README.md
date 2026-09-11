@@ -582,6 +582,23 @@ The backend enforces strict TLS 1.2 minimum versioning and forward-secret AEAD c
 2. **Fail-Fast Production Validation:** When `ENVIRONMENT=production` and `ENABLE_HTTPS=true`, `AppConfig.validateProductionSecrets()` executes on startup and will fail fast if certificate files are missing or if `TLS_MIN_VERSION` is set to an insecure protocol.
 3. **OpenSSL / OS Compatibility:** Production Linux images based on Ubuntu 24.04 (`noble`) bundle OpenSSL 3.0+, which provides native hardware acceleration and full support for both AES-GCM and ChaCha20-Poly1305.
 
+### HTTP Strict Transport Security (HSTS)
+
+The backend enforces HTTP Strict Transport Security (HSTS) in compliance with **RFC 6797 §7.2** to protect against SSL-stripping and protocol downgrade attacks.
+
+#### RFC 6797 Section 7.2 Guarantees
+- **HTTPS Responses Only:** The `Strict-Transport-Security` header is injected **only** when the transport is encrypted (direct TLS or reverse-proxy `X-Forwarded-Proto: https`). Unencrypted HTTP responses omit the header to prevent spoofing or cache poisoning by MITM adversaries.
+- **Error Response Retention:** Because `SecurityHeadersMiddleware` wraps the entire middleware pipeline (including `ErrorMiddleware`), all error responses (400, 401, 403, 404, 429, 500) over HTTPS retain the HSTS and security headers.
+
+#### Environment Variables
+
+| Variable | Default | Allowed Values | Purpose |
+| :--- | :--- | :--- | :--- |
+| `HSTS_ENABLED` | `true` | `true`, `false`, `1`, `0` | Enables or disables HSTS header emission. |
+| `HSTS_MAX_AGE` | `63072000` | Integer >= 0 | Max-age duration in seconds (2 years default for preload list qualification). |
+| `HSTS_INCLUDE_SUBDOMAINS` | `true` | `true`, `false`, `1`, `0` | Includes the `includeSubDomains` directive. |
+| `HSTS_PRELOAD` | `true` | `true`, `false`, `1`, `0` | Includes the `preload` directive for browser HSTS preload list eligibility. |
+
 ---
 
 ## MySQL Setup on macOS

@@ -20,11 +20,13 @@ enum AppConfig {
         "ECDHE-ECDSA-AES256-GCM-SHA384",
         "ECDHE-RSA-AES256-GCM-SHA384",
         "ECDHE-ECDSA-CHACHA20-POLY1305",
-        "ECDHE-RSA-CHACHA20-POLY1305"
+        "ECDHE-RSA-CHACHA20-POLY1305",
     ].joined(separator: ":")
 
     static func jwtAccessTTL() -> TimeInterval {
-        guard let raw = Environment.get("JWT_ACCESS_TTL"), let seconds = TimeInterval(raw), seconds > 0 else {
+        guard let raw = Environment.get("JWT_ACCESS_TTL"), let seconds = TimeInterval(raw),
+            seconds > 0
+        else {
             return defaultJWTAccessTTL
         }
         return seconds
@@ -35,7 +37,8 @@ enum AppConfig {
             if environment == .production && secret.count < minimumJWTSecretLength {
                 throw Abort(
                     .internalServerError,
-                    reason: "JWT_SECRET must be at least \(minimumJWTSecretLength) characters in production"
+                    reason:
+                        "JWT_SECRET must be at least \(minimumJWTSecretLength) characters in production"
                 )
             }
             return secret
@@ -66,7 +69,9 @@ enum AppConfig {
         return flag == "1" || flag == "true" || flag == "yes"
     }
 
-    static func corsAllowedOrigin(for environment: Environment) throws -> CORSMiddleware.AllowOriginSetting {
+    static func corsAllowedOrigin(for environment: Environment) throws
+        -> CORSMiddleware.AllowOriginSetting
+    {
         if let origin = Environment.get("ALLOWED_ORIGIN"), !origin.isEmpty, origin != "*" {
             return .custom(origin)
         }
@@ -85,8 +90,12 @@ enum AppConfig {
     /// Defaults to TLS 1.2 (.tlsv12). Supports upgrading to TLS 1.3 (.tlsv13).
     /// Strictly rejects insecure versions (TLS 1.0, TLS 1.1) in production.
     static func minimumTLSVersion(for environment: Environment) throws -> TLSVersion {
-        guard let raw = Environment.get("TLS_MIN_VERSION")?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-              !raw.isEmpty else {
+        guard
+            let raw = Environment.get("TLS_MIN_VERSION")?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).lowercased(),
+            !raw.isEmpty
+        else {
             return .tlsv12
         }
 
@@ -99,7 +108,8 @@ enum AppConfig {
             if environment == .production {
                 throw Abort(
                     .internalServerError,
-                    reason: "Insecure TLS version '\(raw)' is forbidden in production. Minimum supported version is TLS 1.2."
+                    reason:
+                        "Insecure TLS version '\(raw)' is forbidden in production. Minimum supported version is TLS 1.2."
                 )
             }
             // Clamped to TLS 1.2 for security in non-production environments
@@ -107,7 +117,8 @@ enum AppConfig {
         default:
             throw Abort(
                 .internalServerError,
-                reason: "Unsupported TLS_MIN_VERSION: '\(raw)'. Supported values are '1.2' and '1.3'."
+                reason:
+                    "Unsupported TLS_MIN_VERSION: '\(raw)'. Supported values are '1.2' and '1.3'."
             )
         }
     }
@@ -115,11 +126,99 @@ enum AppConfig {
     /// Returns the cipher suites string to use for TLS 1.2 negotiations.
     /// Can be overridden via TLS_CIPHER_SUITES environment variable.
     static func tlsCipherSuites(for environment: Environment) -> String {
-        if let custom = Environment.get("TLS_CIPHER_SUITES")?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !custom.isEmpty {
+        if let custom = Environment.get("TLS_CIPHER_SUITES")?.trimmingCharacters(
+            in: .whitespacesAndNewlines),
+            !custom.isEmpty
+        {
             return custom
         }
         return defaultSecureCipherSuites
+    }
+
+    // MARK: - HSTS (HTTP Strict Transport Security)
+
+    /// Standard HSTS max-age default: 2 years (63,072,000 seconds).
+    /// Complies with Chrome/Firefox preload list eligibility requirements (minimum 1 year).
+    static let defaultHSTSMaxAge: Int = 63_072_000
+
+    /// Determines whether HSTS header generation is enabled.
+    /// Enabled by default in all environments unless explicitly disabled with HSTS_ENABLED=false/0/no/off.
+    static func isHSTSEnabled(for environment: Environment) -> Bool {
+        guard
+            let raw = Environment.get("HSTS_ENABLED")?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).lowercased()
+        else {
+            return true
+        }
+        return raw != "false" && raw != "0" && raw != "no" && raw != "off"
+    }
+
+    /// Returns the HSTS max-age directive in seconds.
+    /// Defaults to 63072000 (2 years). Rejects negative values.
+    static func hstsMaxAge(for environment: Environment) throws -> Int {
+        guard
+            let raw = Environment.get("HSTS_MAX_AGE")?.trimmingCharacters(
+                in: .whitespacesAndNewlines),
+            !raw.isEmpty
+        else {
+            return defaultHSTSMaxAge
+        }
+
+        guard let seconds = Int(raw), seconds >= 0 else {
+            throw Abort(
+                .internalServerError,
+                reason: "Invalid HSTS_MAX_AGE: '\(raw)'. Must be a non-negative integer."
+            )
+        }
+        return seconds
+    }
+
+    /// Determines whether to include the includeSubDomains directive.
+    /// Defaults to true unless explicitly set to false/0/no/off.
+    static func hstsIncludeSubDomains(for environment: Environment) -> Bool {
+        guard
+            let raw = Environment.get("HSTS_INCLUDE_SUBDOMAINS")?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).lowercased()
+        else {
+            return true
+        }
+        return raw != "false" && raw != "0" && raw != "no" && raw != "off"
+    }
+
+    /// Determines whether to include the preload directive.
+    /// Defaults to true unless explicitly set to false/0/no/off.
+    static func hstsPreload(for environment: Environment) -> Bool {
+        guard
+            let raw = Environment.get("HSTS_PRELOAD")?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).lowercased()
+        else {
+            return true
+        }
+        return raw != "false" && raw != "0" && raw != "no" && raw != "off"
+    }
+
+    /// Constructs the Strict-Transport-Security header value based on environment settings.
+    /// Returns nil if HSTS is disabled.
+    static func hstsHeaderValue(for environment: Environment) throws -> String? {
+        guard isHSTSEnabled(for: environment) else {
+            return nil
+        }
+
+        let maxAge = try hstsMaxAge(for: environment)
+        var directives = ["max-age=\(maxAge)"]
+
+        if hstsIncludeSubDomains(for: environment) {
+            directives.append("includeSubDomains")
+        }
+
+        if hstsPreload(for: environment) {
+            directives.append("preload")
+        }
+
+        return directives.joined(separator: "; ")
     }
 
     static func validateProductionSecrets(for environment: Environment) throws {
@@ -128,7 +227,8 @@ enum AppConfig {
         }
 
         if let password = Environment.get("DATABASE_PASSWORD"),
-           password == "newpassword" || password == "password" {
+            password == "newpassword" || password == "password"
+        {
             throw Abort(
                 .internalServerError,
                 reason: "DATABASE_PASSWORD must not use default values in production"
@@ -143,12 +243,20 @@ enum AppConfig {
         if httpsFlag == "1" || httpsFlag == "true" || httpsFlag == "yes" {
             let certPath = Environment.get("TLS_CERT") ?? "certs/cert.pem"
             let keyPath = Environment.get("TLS_KEY") ?? "certs/key.pem"
-            if !FileManager.default.fileExists(atPath: certPath) || !FileManager.default.fileExists(atPath: keyPath) {
+            if !FileManager.default.fileExists(atPath: certPath)
+                || !FileManager.default.fileExists(atPath: keyPath)
+            {
                 throw Abort(
                     .internalServerError,
-                    reason: "ENABLE_HTTPS is set to true in production but TLS_CERT ('\(certPath)') or TLS_KEY ('\(keyPath)') is missing"
+                    reason:
+                        "ENABLE_HTTPS is set to true in production but TLS_CERT ('\(certPath)') or TLS_KEY ('\(keyPath)') is missing"
                 )
             }
+        }
+
+        // Validate HSTS configuration if enabled in production
+        if isHSTSEnabled(for: environment) {
+            _ = try hstsMaxAge(for: environment)
         }
     }
 
