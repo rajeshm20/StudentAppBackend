@@ -3,13 +3,14 @@
 // All tests run against an in-memory SQLite database (not production MySQL).
 // Tests are serialized to prevent race conditions on shared test state.
 
-@testable import StudentAppBackend
-import VaporTesting
-import Testing
 import Fluent
-import XCTest
-import Vapor
 import NIOSSL
+import Testing
+import Vapor
+import VaporTesting
+import XCTest
+
+@testable import StudentAppBackend
 
 // MARK: - Test Suite
 
@@ -18,7 +19,7 @@ struct StudentAppBackendTests {
 
     // MARK: - Test Harness
 
-    private func withApp(_ test: (Application) async throws -> ()) async throws {
+    private func withApp(_ test: (Application) async throws -> Void) async throws {
         let app = try await Application.make(.testing)
         do {
             try configure(app)
@@ -56,24 +57,31 @@ struct StudentAppBackendTests {
             contactNumber: contactNumber
         )
         var result: StudentPublicResponse?
-        try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-            try req.content.encode(payload)
-        }, afterResponse: { res async throws in
-            result = try res.content.decode(StudentPublicResponse.self)
-        })
+        try await app.testing().test(
+            .POST, "auth/signup/student",
+            beforeRequest: { req in
+                try req.content.encode(payload)
+            },
+            afterResponse: { res async throws in
+                result = try res.content.decode(StudentPublicResponse.self)
+            })
         return result!
     }
 
     /// Logs in and returns a JWT token.
-    private func login(email: String, password: String, on app: Application) async throws -> String {
+    private func login(email: String, password: String, on app: Application) async throws -> String
+    {
         let loginPayload = ["email": email, "password": password]
         var token = ""
-        try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
-            try req.content.encode(loginPayload)
-        }, afterResponse: { res async throws in
-            let loginResponse = try res.content.decode(LoginResponseTest.self)
-            token = loginResponse.token.token
-        })
+        try await app.testing().test(
+            .POST, "auth/login",
+            beforeRequest: { req in
+                try req.content.encode(loginPayload)
+            },
+            afterResponse: { res async throws in
+                let loginResponse = try res.content.decode(LoginResponseTest.self)
+                token = loginResponse.token.token
+            })
         return token
     }
 
@@ -106,19 +114,24 @@ struct StudentAppBackendTests {
     @Test("Legacy signup route still works")
     func testLegacySignup() async throws {
         try await withApp { app in
-            let payload = ["name": "Karthick", "email": "karthickt@example.com", "password": "secret123"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-                do {
-                    let body = try res.content.decode(StudentPublicResponse.self)
-                    #expect(body.email == "karthickt@example.com")
-                    #expect(body.role == "student")  // always student
-                } catch {
-                    XCTFail("Failed to decode response: \(error)")
-                }
-            })
+            let payload = [
+                "name": "Karthick", "email": "karthickt@example.com", "password": "secret123",
+            ]
+            try await app.testing().test(
+                .POST, "auth/signup",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                    do {
+                        let body = try res.content.decode(StudentPublicResponse.self)
+                        #expect(body.email == "karthickt@example.com")
+                        #expect(body.role == "student")  // always student
+                    } catch {
+                        XCTFail("Failed to decode response: \(error)")
+                    }
+                })
         }
     }
 
@@ -138,21 +151,24 @@ struct StudentAppBackendTests {
                 countryCode: "+91",
                 contactNumber: "9876543210"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-                do {
-                    let body = try res.content.decode(StudentPublicResponse.self)
-                    #expect(body.email == "john@example.com")
-                    #expect(body.firstName == "John")
-                    #expect(body.lastName == "Doe")
-                    #expect(body.role == "student")  // always student
-                    #expect(body.contactNumber == "+919876543210")  // E.164 normalized
-                } catch {
-                    XCTFail("Failed to decode response: \(error)")
-                }
-            })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                    do {
+                        let body = try res.content.decode(StudentPublicResponse.self)
+                        #expect(body.email == "john@example.com")
+                        #expect(body.firstName == "John")
+                        #expect(body.lastName == "Doe")
+                        #expect(body.role == "student")  // always student
+                        #expect(body.contactNumber == "+919876543210")  // E.164 normalized
+                    } catch {
+                        XCTFail("Failed to decode response: \(error)")
+                    }
+                })
         }
     }
 
@@ -182,138 +198,184 @@ struct StudentAppBackendTests {
                 contactNumber: "2025551234",
                 role: "admin"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-                do {
-                    let body = try res.content.decode(StudentPublicResponse.self)
-                    #expect(body.role == "student")  // must be student, not admin
-                } catch {
-                    XCTFail("Failed to decode response: \(error)")
-                }
-            })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                    do {
+                        let body = try res.content.decode(StudentPublicResponse.self)
+                        #expect(body.role == "student")  // must be student, not admin
+                    } catch {
+                        XCTFail("Failed to decode response: \(error)")
+                    }
+                })
         }
     }
 
     @Test("Signup: missing firstName returns 400")
     func testSignupMissingFirstName() async throws {
         try await withApp { app in
-            let payload = NewSignupPayload(firstName: "", lastName: "Doe", email: "test@example.com",
-                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: "9876543210")
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            let payload = NewSignupPayload(
+                firstName: "", lastName: "Doe", email: "test@example.com",
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91",
+                contactNumber: "9876543210")
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
     @Test("Signup: missing lastName returns 400")
     func testSignupMissingLastName() async throws {
         try await withApp { app in
-            let payload = NewSignupPayload(firstName: "John", lastName: "", email: "test@example.com",
-                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: "9876543210")
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "", email: "test@example.com",
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91",
+                contactNumber: "9876543210")
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
     @Test("Signup: missing email returns 400")
     func testSignupMissingEmail() async throws {
         try await withApp { app in
-            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "",
-                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: "9876543210")
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "",
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91",
+                contactNumber: "9876543210")
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
     @Test("Signup: invalid email format returns 400")
     func testSignupInvalidEmail() async throws {
         try await withApp { app in
-            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "not-an-email",
-                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: "9876543210")
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "not-an-email",
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91",
+                contactNumber: "9876543210")
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
     @Test("Signup: missing password returns 400")
     func testSignupMissingPassword() async throws {
         try await withApp { app in
-            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "test@example.com",
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "test@example.com",
                 password: "", confirmPassword: "", countryCode: "+91", contactNumber: "9876543210")
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
     @Test("Signup: password too short returns 400")
     func testSignupPasswordTooShort() async throws {
         try await withApp { app in
-            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "test@example.com",
-                password: "abc1", confirmPassword: "abc1", countryCode: "+91", contactNumber: "9876543210")
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "test@example.com",
+                password: "abc1", confirmPassword: "abc1", countryCode: "+91",
+                contactNumber: "9876543210")
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
     @Test("Signup: password/confirmPassword mismatch returns 400")
     func testSignupPasswordMismatch() async throws {
         try await withApp { app in
-            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "test@example.com",
-                password: "secret123", confirmPassword: "different1", countryCode: "+91", contactNumber: "9876543210")
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "test@example.com",
+                password: "secret123", confirmPassword: "different1", countryCode: "+91",
+                contactNumber: "9876543210")
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
     @Test("Signup: missing countryCode returns 400")
     func testSignupMissingCountryCode() async throws {
         try await withApp { app in
-            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "test@example.com",
-                password: "secret123", confirmPassword: "secret123", countryCode: "", contactNumber: "9876543210")
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "test@example.com",
+                password: "secret123", confirmPassword: "secret123", countryCode: "",
+                contactNumber: "9876543210")
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
     @Test("Signup: invalid countryCode (no + prefix) returns 400")
     func testSignupInvalidCountryCode() async throws {
         try await withApp { app in
-            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "test@example.com",
-                password: "secret123", confirmPassword: "secret123", countryCode: "91", contactNumber: "9876543210")
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "test@example.com",
+                password: "secret123", confirmPassword: "secret123", countryCode: "91",
+                contactNumber: "9876543210")
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
     @Test("Signup: invalid contactNumber (non-digits) returns 400")
     func testSignupInvalidContactNumber() async throws {
         try await withApp { app in
-            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "test@example.com",
-                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: "98765abc")
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "test@example.com",
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91",
+                contactNumber: "98765abc")
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
     @Test("Signup: contactNumber too short returns 400")
     func testSignupContactNumberTooShort() async throws {
         try await withApp { app in
-            let payload = NewSignupPayload(firstName: "John", lastName: "Doe", email: "test@example.com",
-                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: "123")
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            let payload = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "test@example.com",
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91",
+                contactNumber: "123")
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
@@ -321,18 +383,27 @@ struct StudentAppBackendTests {
     func testSignupDuplicateEmail() async throws {
         try await withApp { app in
             let email = "dup@example.com"
-            let p1 = NewSignupPayload(firstName: "John", lastName: "Doe", email: email,
-                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: "9876543210")
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(p1)
-            })
-            let p2 = NewSignupPayload(firstName: "Jane", lastName: "Doe", email: email,
-                password: "secret123", confirmPassword: "secret123", countryCode: "+44", contactNumber: "7890123456")
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(p2)
-            }, afterResponse: { res async in
-                #expect(res.status == .conflict)
-            })
+            let p1 = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: email,
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91",
+                contactNumber: "9876543210")
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(p1)
+                })
+            let p2 = NewSignupPayload(
+                firstName: "Jane", lastName: "Doe", email: email,
+                password: "secret123", confirmPassword: "secret123", countryCode: "+44",
+                contactNumber: "7890123456")
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(p2)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .conflict)
+                })
         }
     }
 
@@ -340,18 +411,27 @@ struct StudentAppBackendTests {
     func testSignupDuplicatePhone() async throws {
         try await withApp { app in
             let phone = "9876543210"
-            let p1 = NewSignupPayload(firstName: "John", lastName: "Doe", email: "john1@example.com",
-                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: phone)
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(p1)
-            })
-            let p2 = NewSignupPayload(firstName: "Jane", lastName: "Doe", email: "jane1@example.com",
-                password: "secret123", confirmPassword: "secret123", countryCode: "+91", contactNumber: phone)
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(p2)
-            }, afterResponse: { res async in
-                #expect(res.status == .conflict)
-            })
+            let p1 = NewSignupPayload(
+                firstName: "John", lastName: "Doe", email: "john1@example.com",
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91",
+                contactNumber: phone)
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(p1)
+                })
+            let p2 = NewSignupPayload(
+                firstName: "Jane", lastName: "Doe", email: "jane1@example.com",
+                password: "secret123", confirmPassword: "secret123", countryCode: "+91",
+                contactNumber: phone)
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(p2)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .conflict)
+                })
         }
     }
 
@@ -364,18 +444,21 @@ struct StudentAppBackendTests {
         try await withApp { app in
             _ = try await registerStudent(email: "login@example.com", on: app)
             let loginPayload = ["email": "login@example.com", "password": "secret123"]
-            try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
-                try req.content.encode(loginPayload)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-                do {
-                    let body = try res.content.decode(LoginResponseTest.self)
-                    #expect(body.user.role == "student")
-                    #expect(!body.token.token.isEmpty)
-                } catch {
-                    XCTFail("Failed to decode login response: \(error)")
-                }
-            })
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                    do {
+                        let body = try res.content.decode(LoginResponseTest.self)
+                        #expect(body.user.role == "student")
+                        #expect(!body.token.token.isEmpty)
+                    } catch {
+                        XCTFail("Failed to decode login response: \(error)")
+                    }
+                })
         }
     }
 
@@ -384,11 +467,14 @@ struct StudentAppBackendTests {
         try await withApp { app in
             _ = try await registerStudent(email: "wrongpw@example.com", on: app)
             let loginPayload = ["email": "wrongpw@example.com", "password": "wrongpassword1"]
-            try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
-                try req.content.encode(loginPayload)
-            }, afterResponse: { res async in
-                #expect(res.status == .unauthorized)
-            })
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .unauthorized)
+                })
         }
     }
 
@@ -396,11 +482,14 @@ struct StudentAppBackendTests {
     func testLoginNonExistentEmail() async throws {
         try await withApp { app in
             let loginPayload = ["email": "ghost@example.com", "password": "secret123"]
-            try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
-                try req.content.encode(loginPayload)
-            }, afterResponse: { res async in
-                #expect(res.status == .unauthorized)
-            })
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .unauthorized)
+                })
         }
     }
 
@@ -410,16 +499,20 @@ struct StudentAppBackendTests {
             _ = try await registerStudent(email: "suspended@example.com", on: app)
             // Directly suspend the account in the DB
             if let student = try await Student.query(on: app.db)
-                .filter(\.$email == "suspended@example.com").first() {
+                .filter(\.$email == "suspended@example.com").first()
+            {
                 student.status = .suspended
                 try await student.save(on: app.db)
             }
             let loginPayload = ["email": "suspended@example.com", "password": "secret123"]
-            try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
-                try req.content.encode(loginPayload)
-            }, afterResponse: { res async in
-                #expect(res.status == .unauthorized)
-            })
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .unauthorized)
+                })
         }
     }
 
@@ -428,16 +521,20 @@ struct StudentAppBackendTests {
         try await withApp { app in
             _ = try await registerStudent(email: "inactive@example.com", on: app)
             if let student = try await Student.query(on: app.db)
-                .filter(\.$email == "inactive@example.com").first() {
+                .filter(\.$email == "inactive@example.com").first()
+            {
                 student.status = .inactive
                 try await student.save(on: app.db)
             }
             let loginPayload = ["email": "inactive@example.com", "password": "secret123"]
-            try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
-                try req.content.encode(loginPayload)
-            }, afterResponse: { res async in
-                #expect(res.status == .unauthorized)
-            })
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .unauthorized)
+                })
         }
     }
 
@@ -450,22 +547,27 @@ struct StudentAppBackendTests {
         try await withApp { app in
             _ = try await registerStudent(email: "logout@example.com", on: app)
             let token = try await login(email: "logout@example.com", password: "secret123", on: app)
-            try await app.testing().test(.POST, "auth/logout", beforeRequest: { req in
-                req.headers.bearerAuthorization = .init(token: token)
-            }, afterResponse: { res async throws in
-                #expect(res.status == .ok)
-                let logoutResponse = try res.content.decode(LogoutResponseTest.self)
-                #expect(logoutResponse.message == "Logout successful")
-            })
+            try await app.testing().test(
+                .POST, "auth/logout",
+                beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: token)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let logoutResponse = try res.content.decode(LogoutResponseTest.self)
+                    #expect(logoutResponse.message == "Logout successful")
+                })
         }
     }
 
     @Test("Logout: no token returns 401")
     func testLogoutRequiresAuth() async throws {
         try await withApp { app in
-            try await app.testing().test(.POST, "auth/logout", afterResponse: { res async in
-                #expect(res.status == .unauthorized)
-            })
+            try await app.testing().test(
+                .POST, "auth/logout",
+                afterResponse: { res async in
+                    #expect(res.status == .unauthorized)
+                })
         }
     }
 
@@ -474,16 +576,22 @@ struct StudentAppBackendTests {
         try await withApp { app in
             _ = try await registerStudent(email: "revoke@example.com", on: app)
             let token = try await login(email: "revoke@example.com", password: "secret123", on: app)
-            try await app.testing().test(.POST, "auth/logout", beforeRequest: { req in
-                req.headers.bearerAuthorization = .init(token: token)
-            }, afterResponse: { res async throws in
-                #expect(res.status == .ok)
-            })
-            try await app.testing().test(.POST, "auth/logout", beforeRequest: { req in
-                req.headers.bearerAuthorization = .init(token: token)
-            }, afterResponse: { res async throws in
-                #expect(res.status == .unauthorized)
-            })
+            try await app.testing().test(
+                .POST, "auth/logout",
+                beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: token)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                })
+            try await app.testing().test(
+                .POST, "auth/logout",
+                beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: token)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .unauthorized)
+                })
         }
     }
 
@@ -496,27 +604,42 @@ struct StudentAppBackendTests {
         try await withApp { app in
             let created = try await registerStudent(email: "own@example.com", on: app)
             let token = try await login(email: "own@example.com", password: "secret123", on: app)
-            guard let id = created.id else { XCTFail("No ID"); return }
-            try await app.testing().test(.GET, "students/\(id)", beforeRequest: { req in
-                req.headers.bearerAuthorization = .init(token: token)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-            })
+            guard let id = created.id else {
+                XCTFail("No ID")
+                return
+            }
+            try await app.testing().test(
+                .GET, "students/\(id)",
+                beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: token)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                })
         }
     }
 
     @Test("Student cannot access another student's record (IDOR prevention)")
     func testStudentCannotAccessOtherStudentRecord() async throws {
         try await withApp { app in
-            _ = try await registerStudent(email: "studentA@example.com", contactNumber: "9876500001", on: app)
-            let studentB = try await registerStudent(email: "studentB@example.com", contactNumber: "9876500002", on: app)
-            let tokenA = try await login(email: "studentA@example.com", password: "secret123", on: app)
-            guard let idB = studentB.id else { XCTFail("No ID"); return }
-            try await app.testing().test(.GET, "students/\(idB)", beforeRequest: { req in
-                req.headers.bearerAuthorization = .init(token: tokenA)
-            }, afterResponse: { res async in
-                #expect(res.status == .forbidden)
-            })
+            _ = try await registerStudent(
+                email: "studentA@example.com", contactNumber: "9876500001", on: app)
+            let studentB = try await registerStudent(
+                email: "studentB@example.com", contactNumber: "9876500002", on: app)
+            let tokenA = try await login(
+                email: "studentA@example.com", password: "secret123", on: app)
+            guard let idB = studentB.id else {
+                XCTFail("No ID")
+                return
+            }
+            try await app.testing().test(
+                .GET, "students/\(idB)",
+                beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: tokenA)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .forbidden)
+                })
         }
     }
 
@@ -524,10 +647,15 @@ struct StudentAppBackendTests {
     func testUnauthenticatedStudentAccess() async throws {
         try await withApp { app in
             let created = try await registerStudent(email: "unauth@example.com", on: app)
-            guard let id = created.id else { XCTFail("No ID"); return }
-            try await app.testing().test(.GET, "students/\(id)", afterResponse: { res async in
-                #expect(res.status == .unauthorized)
-            })
+            guard let id = created.id else {
+                XCTFail("No ID")
+                return
+            }
+            try await app.testing().test(
+                .GET, "students/\(id)",
+                afterResponse: { res async in
+                    #expect(res.status == .unauthorized)
+                })
         }
     }
 
@@ -536,14 +664,21 @@ struct StudentAppBackendTests {
         try await withApp { app in
             let student = try await registerStudent(email: "student@rbac.com", on: app)
             let adminID = try await seedUser(role: "admin", email: "admin@rbac.com", on: app.db)
-            let adminToken = try await login(email: "admin@rbac.com", password: "secret123", on: app)
-            guard let studentID = student.id else { XCTFail("No ID"); return }
+            let adminToken = try await login(
+                email: "admin@rbac.com", password: "secret123", on: app)
+            guard let studentID = student.id else {
+                XCTFail("No ID")
+                return
+            }
             _ = adminID
-            try await app.testing().test(.GET, "students/\(studentID)", beforeRequest: { req in
-                req.headers.bearerAuthorization = .init(token: adminToken)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-            })
+            try await app.testing().test(
+                .GET, "students/\(studentID)",
+                beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: adminToken)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                })
         }
     }
 
@@ -555,14 +690,17 @@ struct StudentAppBackendTests {
     func testForgotPasswordEnumerationSafe() async throws {
         try await withApp { app in
             let payload = ["email": "unknown@example.com"]
-            try await app.testing().test(.POST, "auth/forgot-password", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async throws in
-                #expect(res.status == .ok)
-                let body = try res.content.decode(ForgotPasswordResponseTest.self)
-                #expect(body.success == true)
-                #expect(body.message == ForgotPasswordResponse.forgotPasswordSubmitted.message)
-            })
+            try await app.testing().test(
+                .POST, "auth/forgot-password",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let body = try res.content.decode(ForgotPasswordResponseTest.self)
+                    #expect(body.success == true)
+                    #expect(body.message == ForgotPasswordResponse.forgotPasswordSubmitted.message)
+                })
         }
     }
 
@@ -573,22 +711,26 @@ struct StudentAppBackendTests {
     @Test("Health live endpoint returns ok")
     func testHealthLive() async throws {
         try await withApp { app in
-            try await app.testing().test(.GET, "health/live", afterResponse: { res async throws in
-                #expect(res.status == .ok)
-                let body = try res.content.decode(HealthResponseTest.self)
-                #expect(body.status == "ok")
-            })
+            try await app.testing().test(
+                .GET, "health/live",
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let body = try res.content.decode(HealthResponseTest.self)
+                    #expect(body.status == "ok")
+                })
         }
     }
 
     @Test("Health ready endpoint returns ready when database is available")
     func testHealthReady() async throws {
         try await withApp { app in
-            try await app.testing().test(.GET, "health/ready", afterResponse: { res async throws in
-                #expect(res.status == .ok)
-                let body = try res.content.decode(HealthResponseTest.self)
-                #expect(body.status == "ready")
-            })
+            try await app.testing().test(
+                .GET, "health/ready",
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let body = try res.content.decode(HealthResponseTest.self)
+                    #expect(body.status == "ready")
+                })
         }
     }
 
@@ -601,35 +743,39 @@ struct StudentAppBackendTests {
         try await withApp { app in
             let payload = GraphQLSignupStudentRequest(
                 query: """
-                mutation SignupStudent($input: StudentSignupInput!) {
-                  signupStudent(input: $input) {
-                    id email firstName lastName role
-                  }
-                }
-                """,
-                variables: .init(input: .init(
-                    firstName: "GraphQL",
-                    lastName: "User",
-                    email: "gqlstudent@example.com",
-                    password: "secret123",
-                    confirmPassword: "secret123",
-                    countryCode: "+91",
-                    contactNumber: "9988776655"
-                ))
+                    mutation SignupStudent($input: StudentSignupInput!) {
+                      signupStudent(input: $input) {
+                        id email firstName lastName role
+                      }
+                    }
+                    """,
+                variables: .init(
+                    input: .init(
+                        firstName: "GraphQL",
+                        lastName: "User",
+                        email: "gqlstudent@example.com",
+                        password: "secret123",
+                        confirmPassword: "secret123",
+                        countryCode: "+91",
+                        contactNumber: "9988776655"
+                    ))
             )
-            try await app.testing().test(.POST, "graphql", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-                do {
-                    let body = try res.content.decode(GraphQLSignupStudentResponse.self)
-                    #expect(body.data?.signupStudent.email == "gqlstudent@example.com")
-                    #expect(body.data?.signupStudent.role == "student")
-                    #expect(body.errors?.isEmpty != false)
-                } catch {
-                    XCTFail("Failed to decode GraphQL response: \(error)")
-                }
-            })
+            try await app.testing().test(
+                .POST, "graphql",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                    do {
+                        let body = try res.content.decode(GraphQLSignupStudentResponse.self)
+                        #expect(body.data?.signupStudent.email == "gqlstudent@example.com")
+                        #expect(body.data?.signupStudent.role == "student")
+                        #expect(body.errors?.isEmpty != false)
+                    } catch {
+                        XCTFail("Failed to decode GraphQL response: \(error)")
+                    }
+                })
         }
     }
 
@@ -638,28 +784,32 @@ struct StudentAppBackendTests {
         try await withApp { app in
             let payload = GraphQLLegacySignupRequest(
                 query: """
-                mutation Signup($input: StudentGraphQLCreateInput!) {
-                  signup(input: $input) { id name email role }
-                }
-                """,
-                variables: .init(input: .init(
-                    name: "Legacy User",
-                    email: "legacy@example.com",
-                    password: "secret123"
-                ))
+                    mutation Signup($input: StudentGraphQLCreateInput!) {
+                      signup(input: $input) { id name email role }
+                    }
+                    """,
+                variables: .init(
+                    input: .init(
+                        name: "Legacy User",
+                        email: "legacy@example.com",
+                        password: "secret123"
+                    ))
             )
-            try await app.testing().test(.POST, "graphql", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-                do {
-                    let body = try res.content.decode(GraphQLLegacySignupResponse.self)
-                    #expect(body.data?.signup.email == "legacy@example.com")
-                    #expect(body.data?.signup.role == "student")
-                } catch {
-                    XCTFail("Failed to decode GraphQL response: \(error)")
-                }
-            })
+            try await app.testing().test(
+                .POST, "graphql",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                    do {
+                        let body = try res.content.decode(GraphQLLegacySignupResponse.self)
+                        #expect(body.data?.signup.email == "legacy@example.com")
+                        #expect(body.data?.signup.role == "student")
+                    } catch {
+                        XCTFail("Failed to decode GraphQL response: \(error)")
+                    }
+                })
         }
     }
 
@@ -670,24 +820,27 @@ struct StudentAppBackendTests {
 
             let loginPayload = GraphQLLoginRequest(
                 query: """
-                mutation Login($input: StudentGraphQLLoginInput!) {
-                  login(input: $input) { token user { email role } }
-                }
-                """,
+                    mutation Login($input: StudentGraphQLLoginInput!) {
+                      login(input: $input) { token user { email role } }
+                    }
+                    """,
                 variables: .init(input: .init(email: "gqllogin@example.com", password: "secret123"))
             )
-            try await app.testing().test(.POST, "graphql", beforeRequest: { req in
-                try req.content.encode(loginPayload)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-                do {
-                    let body = try res.content.decode(GraphQLLoginResponse.self)
-                    #expect(body.data?.login.token.isEmpty == false)
-                    #expect(body.data?.login.user.role == "student")
-                } catch {
-                    XCTFail("Failed to decode GraphQL login response: \(error)")
-                }
-            })
+            try await app.testing().test(
+                .POST, "graphql",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                    do {
+                        let body = try res.content.decode(GraphQLLoginResponse.self)
+                        #expect(body.data?.login.token.isEmpty == false)
+                        #expect(body.data?.login.user.role == "student")
+                    } catch {
+                        XCTFail("Failed to decode GraphQL login response: \(error)")
+                    }
+                })
         }
     }
 
@@ -695,13 +848,16 @@ struct StudentAppBackendTests {
     func testGraphQLStudentsRequiresAuth() async throws {
         try await withApp { app in
             let payload = GraphQLQueryRequest(query: "{ students { id name email } }")
-            try await app.testing().test(.POST, "graphql", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async throws in
-                #expect(res.status == .ok)
-                let body = try res.content.decode(GraphQLErrorOnlyResponse.self)
-                #expect(body.errors?.isEmpty == false)
-            })
+            try await app.testing().test(
+                .POST, "graphql",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let body = try res.content.decode(GraphQLErrorOnlyResponse.self)
+                    #expect(body.errors?.isEmpty == false)
+                })
         }
     }
 
@@ -709,42 +865,53 @@ struct StudentAppBackendTests {
     func testGraphQLStudentsReturnsSelfOnly() async throws {
         try await withApp { app in
             // Create two students
-            _ = try await registerStudent(email: "gql_a@example.com", contactNumber: "9100000001", on: app)
-            _ = try await registerStudent(email: "gql_b@example.com", contactNumber: "9100000002", on: app)
+            _ = try await registerStudent(
+                email: "gql_a@example.com", contactNumber: "9100000001", on: app)
+            _ = try await registerStudent(
+                email: "gql_b@example.com", contactNumber: "9100000002", on: app)
 
             let token = try await login(email: "gql_a@example.com", password: "secret123", on: app)
             let payload = GraphQLQueryRequest(query: "{ students { id name email role } }")
-            try await app.testing().test(.POST, "graphql", beforeRequest: { req in
-                req.headers.bearerAuthorization = .init(token: token)
-                try req.content.encode(payload)
-            }, afterResponse: { res async throws in
-                #expect(res.status == .ok)
-                let body = try res.content.decode(GraphQLStudentsResponse.self)
-                // Student should only see their own record
-                #expect(body.data?.students.count == 1)
-                #expect(body.data?.students.first?.email == "gql_a@example.com")
-            })
+            try await app.testing().test(
+                .POST, "graphql",
+                beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: token)
+                    try req.content.encode(payload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let body = try res.content.decode(GraphQLStudentsResponse.self)
+                    // Student should only see their own record
+                    #expect(body.data?.students.count == 1)
+                    #expect(body.data?.students.first?.email == "gql_a@example.com")
+                })
         }
     }
 
     @Test("GraphQL: admin JWT returns all students")
     func testGraphQLAdminSeesAllStudents() async throws {
         try await withApp { app in
-            _ = try await registerStudent(email: "s1@rbac.com", contactNumber: "9200000001", on: app)
-            _ = try await registerStudent(email: "s2@rbac.com", contactNumber: "9200000002", on: app)
+            _ = try await registerStudent(
+                email: "s1@rbac.com", contactNumber: "9200000001", on: app)
+            _ = try await registerStudent(
+                email: "s2@rbac.com", contactNumber: "9200000002", on: app)
             _ = try await seedUser(role: "admin", email: "admin2@rbac.com", on: app.db)
-            let adminToken = try await login(email: "admin2@rbac.com", password: "secret123", on: app)
+            let adminToken = try await login(
+                email: "admin2@rbac.com", password: "secret123", on: app)
 
             let payload = GraphQLQueryRequest(query: "{ students { id name email role } }")
-            try await app.testing().test(.POST, "graphql", beforeRequest: { req in
-                req.headers.bearerAuthorization = .init(token: adminToken)
-                try req.content.encode(payload)
-            }, afterResponse: { res async throws in
-                #expect(res.status == .ok)
-                let body = try res.content.decode(GraphQLStudentsResponse.self)
-                // Admin sees all 3 (2 students + 1 admin)
-                #expect((body.data?.students.count ?? 0) >= 3)
-            })
+            try await app.testing().test(
+                .POST, "graphql",
+                beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: adminToken)
+                    try req.content.encode(payload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let body = try res.content.decode(GraphQLStudentsResponse.self)
+                    // Admin sees all 3 (2 students + 1 admin)
+                    #expect((body.data?.students.count ?? 0) >= 3)
+                })
         }
     }
 
@@ -756,9 +923,11 @@ struct StudentAppBackendTests {
     func testRestSignupEmptyName() async throws {
         try await withApp { app in
             let payload = ["name": "", "email": "test@example.com", "password": "password123"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            try await app.testing().test(
+                .POST, "auth/signup",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
@@ -766,10 +935,14 @@ struct StudentAppBackendTests {
     func testRestSignupNameTooLong() async throws {
         try await withApp { app in
             let longName = String(repeating: "a", count: 101)
-            let payload = ["name": longName, "email": "test@example.com", "password": "password123"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            let payload = [
+                "name": longName, "email": "test@example.com", "password": "password123",
+            ]
+            try await app.testing().test(
+                .POST, "auth/signup",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
@@ -777,9 +950,11 @@ struct StudentAppBackendTests {
     func testRestSignupMalformedEmail() async throws {
         try await withApp { app in
             let payload = ["name": "TestUser", "email": "not-an-email", "password": "password123"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            try await app.testing().test(
+                .POST, "auth/signup",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
@@ -788,9 +963,11 @@ struct StudentAppBackendTests {
         try await withApp { app in
             let longEmail = String(repeating: "a", count: 250) + "@example.com"
             let payload = ["name": "TestUser", "email": longEmail, "password": "password123"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            try await app.testing().test(
+                .POST, "auth/signup",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
@@ -798,19 +975,25 @@ struct StudentAppBackendTests {
     func testRestSignupPasswordTooShort() async throws {
         try await withApp { app in
             let payload = ["name": "TestUser", "email": "test@example.com", "password": "pass12"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            try await app.testing().test(
+                .POST, "auth/signup",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
     @Test("REST: Password without numbers rejected")
     func testRestSignupPasswordNoNumbers() async throws {
         try await withApp { app in
-            let payload = ["name": "TestUser", "email": "test@example.com", "password": "passwordonly"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            let payload = [
+                "name": "TestUser", "email": "test@example.com", "password": "passwordonly",
+            ]
+            try await app.testing().test(
+                .POST, "auth/signup",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
@@ -818,29 +1001,41 @@ struct StudentAppBackendTests {
     func testRestSignupPasswordNoLetters() async throws {
         try await withApp { app in
             let payload = ["name": "TestUser", "email": "test@example.com", "password": "12345678"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            try await app.testing().test(
+                .POST, "auth/signup",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
     @Test("REST: Malformed phone number rejected")
     func testRestSignupMalformedPhoneNumber() async throws {
         try await withApp { app in
-            let payload = ["name": "TestUser", "email": "test@example.com", "password": "password123", "phoneNumber": "phone#@number"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            let payload = [
+                "name": "TestUser", "email": "test@example.com", "password": "password123",
+                "phoneNumber": "phone#@number",
+            ]
+            try await app.testing().test(
+                .POST, "auth/signup",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
     @Test("REST: Phone number too short rejected")
     func testRestSignupPhoneNumberTooShort() async throws {
         try await withApp { app in
-            let payload = ["name": "TestUser", "email": "test@example.com", "password": "password123", "phoneNumber": "12345"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            let payload = [
+                "name": "TestUser", "email": "test@example.com", "password": "password123",
+                "phoneNumber": "12345",
+            ]
+            try await app.testing().test(
+                .POST, "auth/signup",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
@@ -848,60 +1043,89 @@ struct StudentAppBackendTests {
     func testRestSignupPhoneNumberTooLong() async throws {
         try await withApp { app in
             let longPhone = String(repeating: "1", count: 21)
-            let payload = ["name": "TestUser", "email": "test@example.com", "password": "password123", "phoneNumber": longPhone]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            let payload = [
+                "name": "TestUser", "email": "test@example.com", "password": "password123",
+                "phoneNumber": longPhone,
+            ]
+            try await app.testing().test(
+                .POST, "auth/signup",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
     @Test("REST: Valid signup payload accepted")
     func testRestSignupValidPayload() async throws {
         try await withApp { app in
-            let payload = ["name": "John Doe", "email": "john@example.com", "password": "password123", "phoneNumber": "+1-234-567-8900"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .ok) })
+            let payload = [
+                "name": "John Doe", "email": "john@example.com", "password": "password123",
+                "phoneNumber": "+1-234-567-8900",
+            ]
+            try await app.testing().test(
+                .POST, "auth/signup",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .ok) })
         }
     }
 
     @Test("REST: Valid signup with optional fields nil")
     func testRestSignupValidPayloadOptionalFieldsNil() async throws {
         try await withApp { app in
-            let payload = ["name": "John Doe", "email": "john2@example.com", "password": "password123"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .ok) })
+            let payload = [
+                "name": "John Doe", "email": "john2@example.com", "password": "password123",
+            ]
+            try await app.testing().test(
+                .POST, "auth/signup",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .ok) })
         }
     }
 
     @Test("REST: Phone number with plus prefix accepted")
     func testRestSignupPhoneWithPlus() async throws {
         try await withApp { app in
-            let payload = ["name": "TestUser", "email": "test+plus@example.com", "password": "password123", "phoneNumber": "+12345678901"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .ok) })
+            let payload = [
+                "name": "TestUser", "email": "test+plus@example.com", "password": "password123",
+                "phoneNumber": "+12345678901",
+            ]
+            try await app.testing().test(
+                .POST, "auth/signup",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .ok) })
         }
     }
 
     @Test("REST: Phone number with dashes accepted")
     func testRestSignupPhoneWithDashes() async throws {
         try await withApp { app in
-            let payload = ["name": "TestUser", "email": "test+dash@example.com", "password": "password123", "phoneNumber": "1-234-567-8901"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .ok) })
+            let payload = [
+                "name": "TestUser", "email": "test+dash@example.com", "password": "password123",
+                "phoneNumber": "1-234-567-8901",
+            ]
+            try await app.testing().test(
+                .POST, "auth/signup",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .ok) })
         }
     }
 
     @Test("REST: Phone number with spaces accepted")
     func testRestSignupPhoneWithSpaces() async throws {
         try await withApp { app in
-            let payload = ["name": "TestUser", "email": "test+space@example.com", "password": "password123", "phoneNumber": "1 234 567 8901"]
-            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .ok) })
+            let payload = [
+                "name": "TestUser", "email": "test+space@example.com", "password": "password123",
+                "phoneNumber": "1 234 567 8901",
+            ]
+            try await app.testing().test(
+                .POST, "auth/signup",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .ok) })
         }
     }
 
@@ -918,9 +1142,11 @@ struct StudentAppBackendTests {
                 password: "abcd123", confirmPassword: "abcd123",
                 countryCode: "+91", contactNumber: "9876543210"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
@@ -933,9 +1159,11 @@ struct StudentAppBackendTests {
                 password: "abcd1234", confirmPassword: "abcd1234",
                 countryCode: "+91", contactNumber: "9876543210"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .ok) })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .ok) })
         }
     }
 
@@ -947,9 +1175,11 @@ struct StudentAppBackendTests {
                 password: "onlyletters", confirmPassword: "onlyletters",
                 countryCode: "+91", contactNumber: "9876543210"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
@@ -961,9 +1191,11 @@ struct StudentAppBackendTests {
                 password: "12345678", confirmPassword: "12345678",
                 countryCode: "+91", contactNumber: "9876543210"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
@@ -979,9 +1211,11 @@ struct StudentAppBackendTests {
                 password: "secret123", confirmPassword: "secret123",
                 countryCode: "+1", contactNumber: "2025551234"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .ok) })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .ok) })
         }
     }
 
@@ -993,9 +1227,11 @@ struct StudentAppBackendTests {
                 password: "secret123", confirmPassword: "secret123",
                 countryCode: "+9999", contactNumber: "1234567"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .ok) })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .ok) })
         }
     }
 
@@ -1007,9 +1243,11 @@ struct StudentAppBackendTests {
                 password: "secret123", confirmPassword: "secret123",
                 countryCode: "+12345", contactNumber: "9876543210"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
@@ -1021,9 +1259,11 @@ struct StudentAppBackendTests {
                 password: "secret123", confirmPassword: "secret123",
                 countryCode: "91", contactNumber: "9876543210"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
@@ -1036,9 +1276,11 @@ struct StudentAppBackendTests {
                 password: "secret123", confirmPassword: "secret123",
                 countryCode: "+0", contactNumber: "9876543210"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
@@ -1054,9 +1296,11 @@ struct StudentAppBackendTests {
                 password: "secret123", confirmPassword: "secret123",
                 countryCode: "+1", contactNumber: "1234567"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .ok) })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .ok) })
         }
     }
 
@@ -1068,9 +1312,11 @@ struct StudentAppBackendTests {
                 password: "secret123", confirmPassword: "secret123",
                 countryCode: "+1", contactNumber: "123456789012345"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .ok) })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .ok) })
         }
     }
 
@@ -1082,9 +1328,11 @@ struct StudentAppBackendTests {
                 password: "secret123", confirmPassword: "secret123",
                 countryCode: "+91", contactNumber: "123456"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
@@ -1096,9 +1344,11 @@ struct StudentAppBackendTests {
                 password: "secret123", confirmPassword: "secret123",
                 countryCode: "+91", contactNumber: "1234567890123456"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in #expect(res.status == .badRequest) })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                }, afterResponse: { res async in #expect(res.status == .badRequest) })
         }
     }
 
@@ -1114,17 +1364,20 @@ struct StudentAppBackendTests {
                 password: "secret123", confirmPassword: "secret123",
                 countryCode: "+44", contactNumber: "7911123456"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-                do {
-                    let body = try res.content.decode(StudentPublicResponse.self)
-                    #expect(body.contactNumber == "+447911123456")
-                } catch {
-                    XCTFail("Failed to decode response: \(error)")
-                }
-            })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                    do {
+                        let body = try res.content.decode(StudentPublicResponse.self)
+                        #expect(body.contactNumber == "+447911123456")
+                    } catch {
+                        XCTFail("Failed to decode response: \(error)")
+                    }
+                })
         }
     }
 
@@ -1136,17 +1389,20 @@ struct StudentAppBackendTests {
                 password: "secret123", confirmPassword: "secret123",
                 countryCode: "+1", contactNumber: "2025550178"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-                do {
-                    let body = try res.content.decode(StudentPublicResponse.self)
-                    #expect(body.contactNumber == "+12025550178")
-                } catch {
-                    XCTFail("Failed to decode response: \(error)")
-                }
-            })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                    do {
+                        let body = try res.content.decode(StudentPublicResponse.self)
+                        #expect(body.contactNumber == "+12025550178")
+                    } catch {
+                        XCTFail("Failed to decode response: \(error)")
+                    }
+                })
         }
     }
 
@@ -1162,19 +1418,22 @@ struct StudentAppBackendTests {
                 password: "secret123", confirmPassword: "secret123",
                 countryCode: "+91", contactNumber: "9876543210"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-                do {
-                    let body = try res.content.decode(StudentPublicResponse.self)
-                    #expect(body.name == "Alice Wonderland")
-                    #expect(body.firstName == "Alice")
-                    #expect(body.lastName == "Wonderland")
-                } catch {
-                    XCTFail("Failed to decode response: \(error)")
-                }
-            })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                    do {
+                        let body = try res.content.decode(StudentPublicResponse.self)
+                        #expect(body.name == "Alice Wonderland")
+                        #expect(body.firstName == "Alice")
+                        #expect(body.lastName == "Wonderland")
+                    } catch {
+                        XCTFail("Failed to decode response: \(error)")
+                    }
+                })
         }
     }
 
@@ -1186,19 +1445,22 @@ struct StudentAppBackendTests {
                 password: "secret123", confirmPassword: "secret123",
                 countryCode: "+91", contactNumber: "9876543211"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-                do {
-                    let body = try res.content.decode(StudentPublicResponse.self)
-                    #expect(body.firstName == "Alice")
-                    #expect(body.lastName == "Wonderland")
-                    #expect(body.name == "Alice Wonderland")
-                } catch {
-                    XCTFail("Failed to decode response: \(error)")
-                }
-            })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                    do {
+                        let body = try res.content.decode(StudentPublicResponse.self)
+                        #expect(body.firstName == "Alice")
+                        #expect(body.lastName == "Wonderland")
+                        #expect(body.name == "Alice Wonderland")
+                    } catch {
+                        XCTFail("Failed to decode response: \(error)")
+                    }
+                })
         }
     }
 
@@ -1210,17 +1472,20 @@ struct StudentAppBackendTests {
                 password: "secret123", confirmPassword: "secret123",
                 countryCode: "+91", contactNumber: "9876543299"
             )
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-                do {
-                    let body = try res.content.decode(StudentPublicResponse.self)
-                    #expect(body.email == "john.doe@example.com")
-                } catch {
-                    XCTFail("Failed to decode response: \(error)")
-                }
-            })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                    do {
+                        let body = try res.content.decode(StudentPublicResponse.self)
+                        #expect(body.email == "john.doe@example.com")
+                    } catch {
+                        XCTFail("Failed to decode response: \(error)")
+                    }
+                })
         }
     }
 
@@ -1233,11 +1498,14 @@ struct StudentAppBackendTests {
                 countryCode: "+91", contactNumber: "9876543212"
             )
             // Verify the DB record directly
-            try await app.testing().test(.POST, "auth/signup/student", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-            })
+            try await app.testing().test(
+                .POST, "auth/signup/student",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                })
             // Confirm student is active in DB
             let student = try await Student.query(on: app.db)
                 .filter(\.$email == "status@example.com")
@@ -1251,22 +1519,26 @@ struct StudentAppBackendTests {
     @Test("Login: response includes user role and is student for new signups")
     func testLoginResponseIncludesRoleAndStatus() async throws {
         try await withApp { app in
-            _ = try await registerStudent(email: "rolecheck@example.com", contactNumber: "9876599999", on: app)
+            _ = try await registerStudent(
+                email: "rolecheck@example.com", contactNumber: "9876599999", on: app)
             let loginPayload = ["email": "rolecheck@example.com", "password": "secret123"]
-            try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
-                try req.content.encode(loginPayload)
-            }, afterResponse: { res async in
-                #expect(res.status == .ok)
-                do {
-                    let body = try res.content.decode(LoginResponseTest.self)
-                    #expect(body.user.role == "student")
-                    #expect(!body.token.token.isEmpty)
-                    // Email should be normalized in login response too
-                    #expect(body.user.email == "rolecheck@example.com")
-                } catch {
-                    XCTFail("Failed to decode login response: \(error)")
-                }
-            })
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                    do {
+                        let body = try res.content.decode(LoginResponseTest.self)
+                        #expect(body.user.role == "student")
+                        #expect(!body.token.token.isEmpty)
+                        // Email should be normalized in login response too
+                        #expect(body.user.email == "rolecheck@example.com")
+                    } catch {
+                        XCTFail("Failed to decode login response: \(error)")
+                    }
+                })
         }
     }
 
@@ -1281,15 +1553,18 @@ struct StudentAppBackendTests {
             let payload = ResetPasswordPayload(
                 email: "anyone@example.com",
                 sessionToken: "fake-session-token",
-                newPassword: "abc1234",       // 7 chars
+                newPassword: "abc1234",  // 7 chars
                 confirmPassword: "abc1234"
             )
-            try await app.testing().test(.POST, "auth/reset-password", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                // Expect 400 (password too short check runs before session lookup)
-                #expect(res.status == .badRequest)
-            })
+            try await app.testing().test(
+                .POST, "auth/reset-password",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                },
+                afterResponse: { res async in
+                    // Expect 400 (password too short check runs before session lookup)
+                    #expect(res.status == .badRequest)
+                })
         }
     }
 
@@ -1302,11 +1577,14 @@ struct StudentAppBackendTests {
                 newPassword: "newPass12",
                 confirmPassword: "different1"
             )
-            try await app.testing().test(.POST, "auth/reset-password", beforeRequest: { req in
-                try req.content.encode(payload)
-            }, afterResponse: { res async in
-                #expect(res.status == .badRequest)
-            })
+            try await app.testing().test(
+                .POST, "auth/reset-password",
+                beforeRequest: { req in
+                    try req.content.encode(payload)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .badRequest)
+                })
         }
     }
 
@@ -1452,6 +1730,400 @@ struct StudentAppBackendTests {
 
         #expect(throws: Abort.self) {
             try AppConfig.validateProductionSecrets(for: .production)
+        }
+    }
+
+    // MARK: - HSTS (HTTP Strict Transport Security) Tests
+
+    @Test("HSTS: Safe rollout default configuration provides 30-day header and disabled in non-prod")
+    func hstsDefaultConfiguration() throws {
+        unsetenv("HSTS_ENABLED")
+        unsetenv("HSTS_MAX_AGE")
+        unsetenv("HSTS_INCLUDE_SUBDOMAINS")
+        unsetenv("HSTS_PRELOAD")
+
+        // In non-production (.development, .testing), HSTS defaults to disabled to prevent accidental caching
+        #expect(!AppConfig.isHSTSEnabled(for: .development))
+        #expect(!AppConfig.isHSTSEnabled(for: .testing))
+        #expect(try AppConfig.hstsHeaderValue(for: .development) == nil)
+
+        // In production, HSTS defaults to enabled with safe 30-day rollout settings
+        #expect(AppConfig.isHSTSEnabled(for: .production))
+        #expect(try AppConfig.hstsMaxAge(for: .production) == 2_592_000)
+        #expect(!AppConfig.hstsIncludeSubDomains(for: .production))
+        #expect(!AppConfig.hstsPreload(for: .production))
+
+        let prodHeader = try AppConfig.hstsHeaderValue(for: .production)
+        #expect(prodHeader == "max-age=2592000")
+    }
+
+    @Test("HSTS: Custom max-age override via HSTS_MAX_AGE")
+    func hstsCustomMaxAge() throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        setenv("HSTS_MAX_AGE", "31536000", 1)
+        defer {
+            unsetenv("HSTS_ENABLED")
+            unsetenv("HSTS_MAX_AGE")
+        }
+
+        #expect(try AppConfig.hstsMaxAge(for: .development) == 31_536_000)
+        let header = try AppConfig.hstsHeaderValue(for: .development)
+        #expect(header?.contains("max-age=31536000") == true)
+    }
+
+    @Test("HSTS: Negative max-age throws Abort error")
+    func hstsNegativeMaxAgeThrows() {
+        setenv("HSTS_MAX_AGE", "-100", 1)
+        defer { unsetenv("HSTS_MAX_AGE") }
+
+        #expect(throws: Abort.self) {
+            try AppConfig.hstsMaxAge(for: .development)
+        }
+    }
+
+    @Test("HSTS: Explicit opt-in for includeSubDomains and preload")
+    func hstsExplicitOptInSubDomainsAndPreload() throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        setenv("HSTS_MAX_AGE", "63072000", 1)
+        setenv("HSTS_INCLUDE_SUBDOMAINS", "true", 1)
+        setenv("HSTS_PRELOAD", "true", 1)
+        defer {
+            unsetenv("HSTS_ENABLED")
+            unsetenv("HSTS_MAX_AGE")
+            unsetenv("HSTS_INCLUDE_SUBDOMAINS")
+            unsetenv("HSTS_PRELOAD")
+        }
+
+        #expect(AppConfig.hstsIncludeSubDomains(for: .development))
+        #expect(AppConfig.hstsPreload(for: .development))
+
+        let header = try AppConfig.hstsHeaderValue(for: .development)
+        #expect(header == "max-age=63072000; includeSubDomains; preload")
+    }
+
+    @Test("HSTS: Emergency revocation with max-age=0")
+    func hstsEmergencyRevocation() throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        setenv("HSTS_MAX_AGE", "0", 1)
+        defer {
+            unsetenv("HSTS_ENABLED")
+            unsetenv("HSTS_MAX_AGE")
+        }
+
+        let header = try AppConfig.hstsHeaderValue(for: .development)
+        #expect(header == "max-age=0")
+    }
+
+    @Test("HSTS: Disabling HSTS in production suppresses header output")
+    func hstsDisabledSuppressesHeader() throws {
+        setenv("HSTS_ENABLED", "false", 1)
+        defer { unsetenv("HSTS_ENABLED") }
+
+        #expect(!AppConfig.isHSTSEnabled(for: .production))
+        #expect(try AppConfig.hstsHeaderValue(for: .production) == nil)
+    }
+
+    @Test("HSTS: Production validation fails if HSTS_MAX_AGE is negative")
+    func validateProductionSecretsFailsOnNegativeHSTSMaxAge() {
+        setenv("DATABASE_PASSWORD", "secure_prod_password_123", 1)
+        setenv("HSTS_MAX_AGE", "-500", 1)
+        defer {
+            unsetenv("DATABASE_PASSWORD")
+            unsetenv("HSTS_MAX_AGE")
+        }
+
+        #expect(throws: Abort.self) {
+            try AppConfig.validateProductionSecrets(for: .production)
+        }
+    }
+
+    @Test("HSTS: Production validation fails if preload is enabled without includeSubDomains")
+    func validateProductionSecretsFailsOnPreloadWithoutSubdomains() {
+        setenv("DATABASE_PASSWORD", "secure_prod_password_123", 1)
+        setenv("HSTS_PRELOAD", "true", 1)
+        setenv("HSTS_INCLUDE_SUBDOMAINS", "false", 1)
+        setenv("HSTS_MAX_AGE", "31536000", 1)
+        defer {
+            unsetenv("DATABASE_PASSWORD")
+            unsetenv("HSTS_PRELOAD")
+            unsetenv("HSTS_INCLUDE_SUBDOMAINS")
+            unsetenv("HSTS_MAX_AGE")
+        }
+
+        #expect(throws: Abort.self) {
+            try AppConfig.validateProductionSecrets(for: .production)
+        }
+    }
+
+    @Test("HSTS: Production validation fails if preload is enabled with insufficient max-age")
+    func validateProductionSecretsFailsOnPreloadWithLowMaxAge() {
+        setenv("DATABASE_PASSWORD", "secure_prod_password_123", 1)
+        setenv("HSTS_PRELOAD", "true", 1)
+        setenv("HSTS_INCLUDE_SUBDOMAINS", "true", 1)
+        setenv("HSTS_MAX_AGE", "86400", 1)
+        defer {
+            unsetenv("DATABASE_PASSWORD")
+            unsetenv("HSTS_PRELOAD")
+            unsetenv("HSTS_INCLUDE_SUBDOMAINS")
+            unsetenv("HSTS_MAX_AGE")
+        }
+
+        #expect(throws: Abort.self) {
+            try AppConfig.validateProductionSecrets(for: .production)
+        }
+    }
+
+    @Test("HSTS: Production validation passes with eligible preload configuration")
+    func validateProductionSecretsPassesWithValidPreloadConfig() throws {
+        setenv("DATABASE_PASSWORD", "secure_prod_password_123", 1)
+        setenv("HSTS_PRELOAD", "true", 1)
+        setenv("HSTS_INCLUDE_SUBDOMAINS", "true", 1)
+        setenv("HSTS_MAX_AGE", "31536000", 1)
+        defer {
+            unsetenv("DATABASE_PASSWORD")
+            unsetenv("HSTS_PRELOAD")
+            unsetenv("HSTS_INCLUDE_SUBDOMAINS")
+            unsetenv("HSTS_MAX_AGE")
+        }
+
+        // Should not throw
+        try AppConfig.validateProductionSecrets(for: .production)
+    }
+
+    @Test(
+        "HSTS: Integration — HTTPS request receives safe rollout HSTS header and baseline security headers"
+    )
+    func hstsHeaderPresentOnHTTPSRequest() async throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        defer { unsetenv("HSTS_ENABLED") }
+
+        try await withApp { app in
+            try await app.testing().test(
+                .GET, "health/live",
+                beforeRequest: { req in
+                    req.headers.add(name: "X-Forwarded-Proto", value: "https")
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    #expect(res.headers.contains(name: "Strict-Transport-Security"))
+                    #expect(
+                        res.headers.first(name: "Strict-Transport-Security")
+                            == "max-age=2592000")
+                    #expect(res.headers.first(name: "X-Content-Type-Options") == "nosniff")
+                    #expect(res.headers.first(name: "X-Frame-Options") == "DENY")
+                    #expect(
+                        res.headers.first(name: "Referrer-Policy")
+                            == "strict-origin-when-cross-origin")
+                    #expect(
+                        res.headers.first(name: "Permissions-Policy")
+                            == "geolocation=(), microphone=(), camera=()")
+                    #expect(
+                        res.headers.first(name: "Content-Security-Policy")?.contains(
+                            "default-src 'self'") == true)
+                    #expect(res.headers.first(name: "Vary")?.contains("X-Forwarded-Proto") == true)
+                })
+        }
+    }
+
+    @Test(
+        "HSTS: Integration (RFC 6797 §7.2) — Plain HTTP request MUST NOT receive Strict-Transport-Security"
+    )
+    func hstsHeaderOmittedOnPlainHTTPRequest() async throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        defer { unsetenv("HSTS_ENABLED") }
+
+        try await withApp { app in
+            try await app.testing().test(
+                .GET, "health/live",
+                beforeRequest: { req in
+                    // Plain HTTP request without HTTPS scheme or X-Forwarded-Proto
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    // RFC 6797 §7.2 violation prevention: Must not send HSTS over unencrypted transport
+                    #expect(!res.headers.contains(name: "Strict-Transport-Security"))
+                    // Standard security headers must still be present
+                    #expect(res.headers.first(name: "X-Content-Type-Options") == "nosniff")
+                    #expect(res.headers.first(name: "X-Frame-Options") == "DENY")
+                })
+        }
+    }
+
+    @Test("HSTS: Integration — Omitted by default in testing environment when HSTS_ENABLED is unset")
+    func hstsHeaderOmittedByDefaultInTesting() async throws {
+        unsetenv("HSTS_ENABLED")
+
+        try await withApp { app in
+            try await app.testing().test(
+                .GET, "health/live",
+                beforeRequest: { req in
+                    req.headers.add(name: "X-Forwarded-Proto", value: "https")
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    #expect(!res.headers.contains(name: "Strict-Transport-Security"))
+                    #expect(res.headers.first(name: "X-Content-Type-Options") == "nosniff")
+                })
+        }
+    }
+
+    @Test("HSTS: Integration — RFC 7239 Forwarded header activates HSTS")
+    func hstsHeaderWithRFC7239Forwarded() async throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        defer { unsetenv("HSTS_ENABLED") }
+
+        try await withApp { app in
+            try await app.testing().test(
+                .GET, "health/live",
+                beforeRequest: { req in
+                    req.headers.add(name: "Forwarded", value: "for=192.0.2.60;proto=https;by=203.0.113.43")
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    #expect(res.headers.contains(name: "Strict-Transport-Security"))
+                    #expect(
+                        res.headers.first(name: "Strict-Transport-Security")
+                            == "max-age=2592000")
+                })
+        }
+    }
+
+    @Test("HSTS: Integration — Untrusted proxy headers suppressed when TRUST_PROXY_HEADERS=false")
+    func hstsHeaderSuppressedWhenProxyHeadersUntrusted() async throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        setenv("TRUST_PROXY_HEADERS", "false", 1)
+        defer {
+            unsetenv("HSTS_ENABLED")
+            unsetenv("TRUST_PROXY_HEADERS")
+        }
+
+        try await withApp { app in
+            try await app.testing().test(
+                .GET, "health/live",
+                beforeRequest: { req in
+                    req.headers.add(name: "X-Forwarded-Proto", value: "https")
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    // Spoofed X-Forwarded-Proto must be ignored
+                    #expect(!res.headers.contains(name: "Strict-Transport-Security"))
+                })
+        }
+    }
+
+    @Test(
+        "HSTS: Integration — 404 Not Found error response over HTTPS retains HSTS and security headers"
+    )
+    func hstsHeaderPresentOn404ErrorResponse() async throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        defer { unsetenv("HSTS_ENABLED") }
+
+        try await withApp { app in
+            try await app.testing().test(
+                .GET, "non-existent-endpoint-path",
+                beforeRequest: { req in
+                    req.headers.add(name: "X-Forwarded-Proto", value: "https")
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .notFound)
+                    #expect(res.headers.contains(name: "Strict-Transport-Security"))
+                    #expect(
+                        res.headers.first(name: "Strict-Transport-Security")
+                            == "max-age=2592000")
+                    #expect(res.headers.first(name: "X-Content-Type-Options") == "nosniff")
+                    #expect(res.headers.first(name: "X-Frame-Options") == "DENY")
+                })
+        }
+    }
+
+    @Test("HSTS: Integration — 401 Unauthorized error response over HTTPS retains HSTS header")
+    func hstsHeaderPresentOn401Unauthorized() async throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        defer { unsetenv("HSTS_ENABLED") }
+
+        try await withApp { app in
+            try await app.testing().test(
+                .GET, "students/\(UUID())",
+                beforeRequest: { req in
+                    req.headers.add(name: "X-Forwarded-Proto", value: "https")
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .unauthorized)
+                    #expect(res.headers.contains(name: "Strict-Transport-Security"))
+                    #expect(
+                        res.headers.first(name: "Strict-Transport-Security")
+                            == "max-age=2592000")
+                    #expect(res.headers.first(name: "X-Content-Type-Options") == "nosniff")
+                })
+        }
+    }
+
+    @Test("HSTS: Integration — 400 Bad Request validation error over HTTPS retains HSTS header")
+    func hstsHeaderPresentOn400ValidationError() async throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        defer { unsetenv("HSTS_ENABLED") }
+
+        try await withApp { app in
+            let malformedPayload = ["email": "not-an-email"]
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    req.headers.add(name: "X-Forwarded-Proto", value: "https")
+                    try req.content.encode(malformedPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .badRequest)
+                    #expect(res.headers.contains(name: "Strict-Transport-Security"))
+                    #expect(
+                        res.headers.first(name: "Strict-Transport-Security")
+                            == "max-age=2592000")
+                    #expect(res.headers.first(name: "X-Content-Type-Options") == "nosniff")
+                })
+        }
+    }
+
+    @Test("HSTS: Integration — 500 Internal Server Error response over HTTPS retains HSTS header")
+    func hstsHeaderPresentOn500InternalServerError() async throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        defer { unsetenv("HSTS_ENABLED") }
+
+        try await withApp { app in
+            app.get("test-error-500") { _ -> String in
+                throw Abort(.internalServerError, reason: "Simulated server failure")
+            }
+            try await app.testing().test(
+                .GET, "test-error-500",
+                beforeRequest: { req in
+                    req.headers.add(name: "X-Forwarded-Proto", value: "https")
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .internalServerError)
+                    #expect(res.headers.contains(name: "Strict-Transport-Security"))
+                    #expect(
+                        res.headers.first(name: "Strict-Transport-Security")
+                            == "max-age=2592000")
+                    #expect(res.headers.first(name: "X-Content-Type-Options") == "nosniff")
+                    #expect(res.headers.first(name: "X-Frame-Options") == "DENY")
+                })
+        }
+    }
+
+    @Test("HSTS: Integration — When HSTS_ENABLED=false, HTTPS responses do not receive HSTS header")
+    func hstsHeaderOmittedWhenDisabled() async throws {
+        setenv("HSTS_ENABLED", "false", 1)
+        defer { unsetenv("HSTS_ENABLED") }
+
+        try await withApp { app in
+            try await app.testing().test(
+                .GET, "health/live",
+                beforeRequest: { req in
+                    req.headers.add(name: "X-Forwarded-Proto", value: "https")
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    #expect(!res.headers.contains(name: "Strict-Transport-Security"))
+                    #expect(res.headers.first(name: "X-Content-Type-Options") == "nosniff")
+                })
         }
     }
 }

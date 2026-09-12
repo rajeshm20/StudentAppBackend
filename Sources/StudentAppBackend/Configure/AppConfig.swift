@@ -20,11 +20,13 @@ enum AppConfig {
         "ECDHE-ECDSA-AES256-GCM-SHA384",
         "ECDHE-RSA-AES256-GCM-SHA384",
         "ECDHE-ECDSA-CHACHA20-POLY1305",
-        "ECDHE-RSA-CHACHA20-POLY1305"
+        "ECDHE-RSA-CHACHA20-POLY1305",
     ].joined(separator: ":")
 
     static func jwtAccessTTL() -> TimeInterval {
-        guard let raw = Environment.get("JWT_ACCESS_TTL"), let seconds = TimeInterval(raw), seconds > 0 else {
+        guard let raw = Environment.get("JWT_ACCESS_TTL"), let seconds = TimeInterval(raw),
+            seconds > 0
+        else {
             return defaultJWTAccessTTL
         }
         return seconds
@@ -35,7 +37,8 @@ enum AppConfig {
             if environment == .production && secret.count < minimumJWTSecretLength {
                 throw Abort(
                     .internalServerError,
-                    reason: "JWT_SECRET must be at least \(minimumJWTSecretLength) characters in production"
+                    reason:
+                        "JWT_SECRET must be at least \(minimumJWTSecretLength) characters in production"
                 )
             }
             return secret
@@ -66,7 +69,9 @@ enum AppConfig {
         return flag == "1" || flag == "true" || flag == "yes"
     }
 
-    static func corsAllowedOrigin(for environment: Environment) throws -> CORSMiddleware.AllowOriginSetting {
+    static func corsAllowedOrigin(for environment: Environment) throws
+        -> CORSMiddleware.AllowOriginSetting
+    {
         if let origin = Environment.get("ALLOWED_ORIGIN"), !origin.isEmpty, origin != "*" {
             return .custom(origin)
         }
@@ -85,8 +90,12 @@ enum AppConfig {
     /// Defaults to TLS 1.2 (.tlsv12). Supports upgrading to TLS 1.3 (.tlsv13).
     /// Strictly rejects insecure versions (TLS 1.0, TLS 1.1) in production.
     static func minimumTLSVersion(for environment: Environment) throws -> TLSVersion {
-        guard let raw = Environment.get("TLS_MIN_VERSION")?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-              !raw.isEmpty else {
+        guard
+            let raw = Environment.get("TLS_MIN_VERSION")?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).lowercased(),
+            !raw.isEmpty
+        else {
             return .tlsv12
         }
 
@@ -99,7 +108,8 @@ enum AppConfig {
             if environment == .production {
                 throw Abort(
                     .internalServerError,
-                    reason: "Insecure TLS version '\(raw)' is forbidden in production. Minimum supported version is TLS 1.2."
+                    reason:
+                        "Insecure TLS version '\(raw)' is forbidden in production. Minimum supported version is TLS 1.2."
                 )
             }
             // Clamped to TLS 1.2 for security in non-production environments
@@ -107,7 +117,8 @@ enum AppConfig {
         default:
             throw Abort(
                 .internalServerError,
-                reason: "Unsupported TLS_MIN_VERSION: '\(raw)'. Supported values are '1.2' and '1.3'."
+                reason:
+                    "Unsupported TLS_MIN_VERSION: '\(raw)'. Supported values are '1.2' and '1.3'."
             )
         }
     }
@@ -115,11 +126,120 @@ enum AppConfig {
     /// Returns the cipher suites string to use for TLS 1.2 negotiations.
     /// Can be overridden via TLS_CIPHER_SUITES environment variable.
     static func tlsCipherSuites(for environment: Environment) -> String {
-        if let custom = Environment.get("TLS_CIPHER_SUITES")?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !custom.isEmpty {
+        if let custom = Environment.get("TLS_CIPHER_SUITES")?.trimmingCharacters(
+            in: .whitespacesAndNewlines),
+            !custom.isEmpty
+        {
             return custom
         }
         return defaultSecureCipherSuites
+    }
+
+    // MARK: - HSTS (HTTP Strict Transport Security)
+
+    /// Safe rollout HSTS max-age default: 30 days (2,592,000 seconds).
+    /// A conservative default avoids extended lockouts during rollout.
+    /// Can be increased up to 1-2 years (e.g. 63072000) for preload list submission once fully vetted.
+    static let defaultHSTSMaxAge: Int = 2_592_000
+
+    /// Minimum max-age required by browser preload lists (1 year = 31,536,000 seconds).
+    static let minimumPreloadMaxAge: Int = 31_536_000
+
+    /// Determines whether HSTS header generation is enabled.
+    /// In production, defaults to true unless explicitly disabled with HSTS_ENABLED=false/0/no/off.
+    /// In non-production environments (development, testing), defaults to false to avoid unexpected caching
+    /// unless explicitly enabled with HSTS_ENABLED=true/1/yes/on.
+    static func isHSTSEnabled(for environment: Environment) -> Bool {
+        guard
+            let raw = Environment.get("HSTS_ENABLED")?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).lowercased()
+        else {
+            return environment == .production
+        }
+        return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
+    }
+
+    /// Returns the HSTS max-age directive in seconds.
+    /// Defaults to 2,592,000 (30 days rollout default). Rejects negative or non-integer values.
+    static func hstsMaxAge(for environment: Environment) throws -> Int {
+        guard
+            let raw = Environment.get("HSTS_MAX_AGE")?.trimmingCharacters(
+                in: .whitespacesAndNewlines),
+            !raw.isEmpty
+        else {
+            return defaultHSTSMaxAge
+        }
+
+        guard let seconds = Int(raw), seconds >= 0 else {
+            throw Abort(
+                .internalServerError,
+                reason: "Invalid HSTS_MAX_AGE: '\(raw)'. Must be a non-negative integer representing seconds."
+            )
+        }
+        return seconds
+    }
+
+    /// Determines whether to include the includeSubDomains directive.
+    /// Defaults to false for safe phased rollout. Requires explicit opt-in via HSTS_INCLUDE_SUBDOMAINS=true/1/yes/on.
+    static func hstsIncludeSubDomains(for environment: Environment) -> Bool {
+        guard
+            let raw = Environment.get("HSTS_INCLUDE_SUBDOMAINS")?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).lowercased()
+        else {
+            return false
+        }
+        return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
+    }
+
+    /// Determines whether to include the preload directive.
+    /// Defaults to false to prevent accidental and irreversible browser preload list inclusion.
+    /// Requires explicit opt-in via HSTS_PRELOAD=true/1/yes/on.
+    static func hstsPreload(for environment: Environment) -> Bool {
+        guard
+            let raw = Environment.get("HSTS_PRELOAD")?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).lowercased()
+        else {
+            return false
+        }
+        return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
+    }
+
+    /// Determines whether to trust forwarded headers (X-Forwarded-Proto, Forwarded).
+    /// Defaults to true in containerized and reverse-proxy deployments where edge proxies (Caddy, ALB, Nginx) terminate TLS.
+    /// Set to false (TRUST_PROXY_HEADERS=false) if the backend is exposed directly to untrusted clients.
+    static func trustProxyHeaders(for environment: Environment) -> Bool {
+        guard
+            let raw = Environment.get("TRUST_PROXY_HEADERS")?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).lowercased()
+        else {
+            return true
+        }
+        return raw != "false" && raw != "0" && raw != "no" && raw != "off"
+    }
+
+    /// Constructs the Strict-Transport-Security header value based on environment settings.
+    /// Returns nil if HSTS is disabled.
+    static func hstsHeaderValue(for environment: Environment) throws -> String? {
+        guard isHSTSEnabled(for: environment) else {
+            return nil
+        }
+
+        let maxAge = try hstsMaxAge(for: environment)
+        var directives = ["max-age=\(maxAge)"]
+
+        if hstsIncludeSubDomains(for: environment) {
+            directives.append("includeSubDomains")
+        }
+
+        if hstsPreload(for: environment) {
+            directives.append("preload")
+        }
+
+        return directives.joined(separator: "; ")
     }
 
     static func validateProductionSecrets(for environment: Environment) throws {
@@ -128,7 +248,8 @@ enum AppConfig {
         }
 
         if let password = Environment.get("DATABASE_PASSWORD"),
-           password == "newpassword" || password == "password" {
+            password == "newpassword" || password == "password"
+        {
             throw Abort(
                 .internalServerError,
                 reason: "DATABASE_PASSWORD must not use default values in production"
@@ -143,11 +264,38 @@ enum AppConfig {
         if httpsFlag == "1" || httpsFlag == "true" || httpsFlag == "yes" {
             let certPath = Environment.get("TLS_CERT") ?? "certs/cert.pem"
             let keyPath = Environment.get("TLS_KEY") ?? "certs/key.pem"
-            if !FileManager.default.fileExists(atPath: certPath) || !FileManager.default.fileExists(atPath: keyPath) {
+            if !FileManager.default.fileExists(atPath: certPath)
+                || !FileManager.default.fileExists(atPath: keyPath)
+            {
                 throw Abort(
                     .internalServerError,
-                    reason: "ENABLE_HTTPS is set to true in production but TLS_CERT ('\(certPath)') or TLS_KEY ('\(keyPath)') is missing"
+                    reason:
+                        "ENABLE_HTTPS is set to true in production but TLS_CERT ('\(certPath)') or TLS_KEY ('\(keyPath)') is missing"
                 )
+            }
+        }
+
+        // Validate HSTS configuration if enabled in production
+        if isHSTSEnabled(for: environment) {
+            let maxAge = try hstsMaxAge(for: environment)
+
+            // If preload directive is enabled, enforce preload submission eligibility requirements:
+            // Chrome and Firefox require max-age >= 1 year (31,536,000s) and includeSubDomains.
+            if hstsPreload(for: environment) {
+                guard hstsIncludeSubDomains(for: environment) else {
+                    throw Abort(
+                        .internalServerError,
+                        reason:
+                            "HSTS_PRELOAD=true requires HSTS_INCLUDE_SUBDOMAINS=true per browser preload list requirements."
+                    )
+                }
+                guard maxAge >= minimumPreloadMaxAge else {
+                    throw Abort(
+                        .internalServerError,
+                        reason:
+                            "HSTS_PRELOAD=true requires HSTS_MAX_AGE >= \(minimumPreloadMaxAge) (1 year) per browser preload list requirements (currently \(maxAge))."
+                    )
+                }
             }
         }
     }
