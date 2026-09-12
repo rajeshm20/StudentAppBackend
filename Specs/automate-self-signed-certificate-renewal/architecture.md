@@ -79,15 +79,17 @@ The CLI script exposes a POSIX-compliant interface:
 - `./scripts/renew-dev-certs.sh --force` (immediate regeneration)
 - `./scripts/renew-dev-certs.sh --days 365 --threshold 30` (custom validity and renewal windows)
 - `./scripts/renew-dev-certs.sh --cert-dir <PATH>` (sandbox directory testing)
+- `./scripts/renew-dev-certs.sh --p12-pass <PASSWORD>` (custom password protection for PKCS#12 bundle)
 
 ## 6. Security Hardening & Vulnerability Mitigations
 
 | Vulnerability Vector | Mitigation Mechanism | Implementation Detail |
 | :--- | :--- | :--- |
-| **Shell Injection via SANs** | Whitelist validation & explicit quoting | Both script and Swift validate SANs against `^[A-Za-z0-9_.:,-]+$`. Quoted expansion in openssl calls. |
+| **Shell Injection via SANs** | Token-by-token validation & explicit quoting | Both script and Swift validate every token: `DNS:<hostname>` (rejects underscores) and `IP:<address>` (IPv4 octet <= 255, IPv6). Quoted expansion in OpenSSL calls. |
 | **Input Validation** | Strict numeric bounds checking | `--days` must be positive integer (`>= 1`); `--threshold` must be non-negative integer (`>= 0`). |
 | **Path Traversal** | Traversal & system path blacklisting | Rejects `..` sequences, null bytes, and sensitive system root paths (`/`, `/etc`, `/dev`, `/bin`, `/usr`, `/proc`, `/sys`). |
 | **Key Exposure Race Condition** | Inode creation `umask 0077` | Script applies `umask 0077` before file creation, guaranteeing private keys and PKCS#12 bundles are created with `0600` permissions. |
-| **PKCS#12 Password Security** | Local development restriction & file isolation | Empty password (`pass:`) intentionally used for seamless macOS Keychain & iOS Simulator trust store import without prompts. Protected by `0600` permissions and forbidden in production. |
+| **PKCS#12 Password Security** | Local development restriction & configurable password | Defaults to empty password (`pass:`) for seamless macOS Keychain & iOS Simulator trust store import without prompts; supports custom password via `--p12-pass`. Protected by `0600` permissions. |
 | **Subprocess Pipe Deadlocks** | `FileHandle.nullDevice` non-blocking pipes | Process stderr/stdout discarded directly to null device when unneeded, avoiding 64KB OS pipe buffer exhaustion deadlocks. |
+| **Orphaned Temp Files** | POSIX Trap Handler (`EXIT INT TERM`) | Trap handler guarantees temporary fallback OpenSSL configs are unlinked upon normal exit or error. |
 

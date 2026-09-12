@@ -23,8 +23,18 @@ CERT_DIR="certs"
 DAYS=365
 THRESHOLD_DAYS=30
 SANS="DNS:localhost,IP:127.0.0.1,IP:::1"
+P12_PASS=""
 CHECK_ONLY=false
 FORCE=false
+
+# Temp config file tracker and cleanup trap
+OPENSSL_CONF=""
+cleanup() {
+    if [[ -n "${OPENSSL_CONF:-}" && -f "${OPENSSL_CONF:-}" ]]; then
+        rm -f "$OPENSSL_CONF"
+    fi
+}
+trap cleanup EXIT INT TERM
 
 # Print usage
 usage() {
@@ -40,9 +50,67 @@ Options:
   --threshold <N>    Threshold in days before expiration to trigger renewal (default: 30)
   --cert-dir <DIR>   Target directory for certificates (default: certs)
   --san <SANS>       Subject Alternative Names (default: DNS:localhost,IP:127.0.0.1,IP:::1)
+  --p12-pass <PASS>  Password for PKCS#12 bundle (default: empty password)
   -h, --help         Show this help message and exit
 EOF
     exit 0
+}
+
+# Validate each comma-separated SAN token
+validate_sans() {
+    local raw_sans="$1"
+    if [[ -z "$raw_sans" ]]; then
+        echo "Error: --san cannot be empty" >&2
+        exit 1
+    fi
+
+    local IFS=','
+    local -a san_tokens
+    read -r -a san_tokens <<< "$raw_sans"
+
+    for token in "${san_tokens[@]}"; do
+        # Trim leading and trailing whitespace
+        local t="${token#"${token%%[![:space:]]*}"}"
+        t="${t%"${t##*[![:space:]]}"}"
+
+        if [[ -z "$t" ]]; then
+            echo "Error: empty SAN token found in '$raw_sans'" >&2
+            exit 1
+        fi
+
+        if [[ "$t" =~ ^DNS:[A-Za-z0-9.-]+$ ]]; then
+            local hostname="${t#DNS:}"
+            # Disallow underscores in DNS hostnames (RFC 1035 / RFC 1123)
+            if [[ "$hostname" == *"_"* ]]; then
+                echo "Error: invalid DNS SAN '$t': underscores are not permitted in DNS hostnames." >&2
+                exit 1
+            fi
+            # Disallow leading or trailing dot or hyphen
+            if [[ "$hostname" == .* || "$hostname" == *. || "$hostname" == -* || "$hostname" == *- ]]; then
+                echo "Error: invalid DNS SAN '$t': cannot start or end with '.' or '-'." >&2
+                exit 1
+            fi
+        elif [[ "$t" =~ ^IP:([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|[0-9a-fA-F:]+)$ ]]; then
+            local ip="${t#IP:}"
+            # If IPv4, validate octets <= 255
+            if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                local oIFS="$IFS"
+                IFS='.'
+                local -a octets
+                read -r -a octets <<< "$ip"
+                IFS="$oIFS"
+                for octet in "${octets[@]}"; do
+                    if (( octet > 255 )); then
+                        echo "Error: invalid IPv4 address in SAN '$t': octet $octet exceeds 255." >&2
+                        exit 1
+                    fi
+                done
+            fi
+        else
+            echo "Error: invalid SAN token '$t'. Only well-formed 'DNS:<hostname>' and 'IP:<address>' entries are permitted." >&2
+            exit 1
+        fi
+    done
 }
 
 # Parse command-line arguments
@@ -87,12 +155,12 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --san)
-            # Whitelist SAN characters to prevent command/config injection: alphanumeric, commas, dots, colons, hyphens, underscores
-            if ! [[ "$2" =~ ^[A-Za-z0-9_.:,-]+$ ]]; then
-                echo "Error: --san contains invalid characters. Only alphanumeric, commas, dots, colons, hyphens, and underscores are allowed." >&2
-                exit 1
-            fi
+            validate_sans "$2"
             SANS="$2"
+            shift 2
+            ;;
+        --p12-pass)
+            P12_PASS="$2"
             shift 2
             ;;
         -h|--help)
@@ -104,6 +172,9 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Validate default SANs
+validate_sans "$SANS"
 
 # Verify openssl is available
 if ! command -v openssl >/dev/null 2>&1; then
@@ -212,14 +283,14 @@ EOF
 fi
 
 # Export PKCS#12 bundle for macOS Keychain / iOS Simulator trust.
-# NOTE: Uses empty password (pass:) for zero-friction local development/simulator import.
-# Protected by filesystem mode 0600 (read/write only by owner) and strictly restricted to development.
+# NOTE: Defaults to empty password (pass:) for zero-friction local development/simulator import,
+# or accepts --p12-pass for protected exports. Protected by filesystem mode 0600.
 openssl pkcs12 -export \
     -out "$P12_FILE" \
     -inkey "$KEY_FILE" \
     -in "$CERT_FILE" \
     -name "Vapor Localhost Cert" \
-    -passout pass: >/dev/null 2>&1
+    -passout "pass:$P12_PASS" >/dev/null 2>&1
 
 # Restore previous umask and ensure public certificate is readable (0644)
 umask "$OLD_UMASK"

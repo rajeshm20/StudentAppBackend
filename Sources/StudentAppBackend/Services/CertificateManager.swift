@@ -83,12 +83,13 @@ struct CertificateManager: Sendable {
         thresholdDays: Int = 30,
         force: Bool = false,
         sans: String = "DNS:localhost,IP:127.0.0.1,IP:::1",
+        p12Password: String = "",
         environment: Environment = .development
     ) throws -> CertificateStatus {
         guard environment != .production else {
             throw Abort(
                 .internalServerError,
-                reason: "Self-signed certificate auto-renewal is strictly forbidden in production."
+                reason: "FATAL: Self-signed certificate auto-renewal is strictly forbidden in production. Use trusted CA or ACME certificates."
             )
         }
 
@@ -117,6 +118,9 @@ struct CertificateManager: Sendable {
                 "--threshold", "\(thresholdDays)",
                 "--san", sans
             ]
+            if !p12Password.isEmpty {
+                args.append(contentsOf: ["--p12-pass", p12Password])
+            }
             if force {
                 args.append("--force")
             }
@@ -132,14 +136,14 @@ struct CertificateManager: Sendable {
                 "-addext", "subjectAltName=\(sans)"
             ])
             let p12File = (certDir as NSString).appendingPathComponent("localhost.p12")
-            // Export PKCS#12 bundle with empty password for seamless dev/simulator keychain import
+            // Export PKCS#12 bundle with empty password (or specified p12Password) for keychain import
             _ = runOpenSSLProcess([
                 "pkcs12", "-export",
                 "-out", p12File,
                 "-inkey", keyFile,
                 "-in", certFile,
                 "-name", "Vapor Localhost Cert",
-                "-passout", "pass:"
+                "-passout", "pass:\(p12Password)"
             ])
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyFile)
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: p12File)
@@ -234,9 +238,50 @@ struct CertificateManager: Sendable {
     }
 
     private static func validateSANs(_ sans: String) throws {
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:,-")
-        guard sans.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
-            throw Abort(.badRequest, reason: "Invalid SANs: only alphanumeric, commas, dots, colons, hyphens, and underscores are allowed.")
+        guard !sans.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw Abort(.badRequest, reason: "Invalid SANs: subjectAltName cannot be empty.")
+        }
+
+        let tokens = sans.split(separator: ",", omittingEmptySubsequences: false).map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        for token in tokens {
+            guard !token.isEmpty else {
+                throw Abort(.badRequest, reason: "Invalid SANs: empty token found in '\(sans)'.")
+            }
+
+            if token.hasPrefix("DNS:") {
+                let hostname = String(token.dropFirst(4))
+                guard !hostname.contains("_") else {
+                    throw Abort(.badRequest, reason: "Invalid DNS SAN '\(token)': underscores are not permitted in DNS hostnames.")
+                }
+                guard !hostname.hasPrefix(".") && !hostname.hasSuffix(".") &&
+                      !hostname.hasPrefix("-") && !hostname.hasSuffix("-") else {
+                    throw Abort(.badRequest, reason: "Invalid DNS SAN '\(token)': cannot start or end with '.' or '-'.")
+                }
+                let dnsAllowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
+                guard hostname.unicodeScalars.allSatisfy({ dnsAllowed.contains($0) }) else {
+                    throw Abort(.badRequest, reason: "Invalid DNS SAN '\(token)': contains invalid characters.")
+                }
+            } else if token.hasPrefix("IP:") {
+                let ip = String(token.dropFirst(3))
+                let ipAllowed = CharacterSet(charactersIn: "0123456789abcdefABCDEF:.")
+                guard ip.unicodeScalars.allSatisfy({ ipAllowed.contains($0) }) else {
+                    throw Abort(.badRequest, reason: "Invalid IP SAN '\(token)': contains invalid characters.")
+                }
+                // If IPv4, validate octets <= 255
+                let octets = ip.split(separator: ".")
+                if octets.count == 4 {
+                    for octet in octets {
+                        guard let val = Int(octet), val >= 0, val <= 255 else {
+                            throw Abort(.badRequest, reason: "Invalid IPv4 SAN '\(token)': octet out of range.")
+                        }
+                    }
+                }
+            } else {
+                throw Abort(.badRequest, reason: "Invalid SAN token '\(token)'. Only 'DNS:<hostname>' and 'IP:<address>' are permitted.")
+            }
         }
     }
 

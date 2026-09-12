@@ -2363,6 +2363,17 @@ struct StudentAppBackendTests {
         #expect(runScriptWithArgs(["--san", "DNS:localhost`id`"]) != 0)
         #expect(runScriptWithArgs(["--san", "DNS:localhost' OR 1=1--"]) != 0)
         #expect(runScriptWithArgs(["--san", "DNS:localhost$HOME"]) != 0)
+
+        // Rejects underscores in DNS SANs (RFC 1035 / RFC 1123)
+        #expect(runScriptWithArgs(["--san", "DNS:my_server.local"]) != 0)
+
+        // Rejects invalid prefixes or empty SANs
+        #expect(runScriptWithArgs(["--san", "URI:http://localhost"]) != 0)
+        #expect(runScriptWithArgs(["--san", "EMAIL:test@example.com"]) != 0)
+        #expect(runScriptWithArgs(["--san", ""]) != 0)
+
+        // Rejects invalid IPv4 octets
+        #expect(runScriptWithArgs(["--san", "IP:127.0.0.300"]) != 0)
     }
 
     @Test("Certificate: CertificateManager rejects path traversal and invalid SAN characters")
@@ -2385,7 +2396,7 @@ struct StudentAppBackendTests {
             )
         }
 
-        // Invalid SAN rejection
+        // Invalid SAN rejection (shell injection)
         #expect(throws: Abort.self) {
             try CertificateManager.renewDevelopmentCertificates(
                 certDir: "certs",
@@ -2394,6 +2405,56 @@ struct StudentAppBackendTests {
                 environment: .development
             )
         }
+
+        // Rejects DNS SAN with underscores
+        #expect(throws: Abort.self) {
+            try CertificateManager.renewDevelopmentCertificates(
+                certDir: "certs",
+                force: true,
+                sans: "DNS:invalid_host.example",
+                environment: .development
+            )
+        }
+
+        // Rejects invalid SAN prefix
+        #expect(throws: Abort.self) {
+            try CertificateManager.renewDevelopmentCertificates(
+                certDir: "certs",
+                force: true,
+                sans: "URI:https://localhost",
+                environment: .development
+            )
+        }
+
+        // Rejects out-of-bounds IPv4
+        #expect(throws: Abort.self) {
+            try CertificateManager.renewDevelopmentCertificates(
+                certDir: "certs",
+                force: true,
+                sans: "IP:192.168.1.999",
+                environment: .development
+            )
+        }
+    }
+
+    @Test("Certificate: Password-protected PKCS#12 bundle generation")
+    func certificateCustomP12Password() throws {
+        let tempDir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+        let status = try CertificateManager.renewDevelopmentCertificates(
+            certDir: tempDir,
+            days: 365,
+            thresholdDays: 30,
+            force: true,
+            sans: "DNS:localhost,IP:127.0.0.1,IP:::1",
+            p12Password: "CustomSecretPass123!",
+            environment: .development
+        )
+
+        #expect(status.isHealthy)
+        let p12File = (tempDir as NSString).appendingPathComponent("localhost.p12")
+        #expect(FileManager.default.fileExists(atPath: p12File))
     }
 }
 
