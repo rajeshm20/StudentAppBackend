@@ -2143,10 +2143,25 @@ struct StudentAppBackendTests {
     }
 
     @Test("Certificate: Healthy certificate returns .valid status")
-    func certificateStatusValid() {
+    func certificateStatusValid() throws {
+        let tempDir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+        // Generate a valid certificate first
+        _ = try CertificateManager.renewDevelopmentCertificates(
+            certDir: tempDir,
+            days: 365,
+            thresholdDays: 30,
+            force: true,
+            environment: .development
+        )
+
+        let certPath = (tempDir as NSString).appendingPathComponent("cert.pem")
+        let keyPath = (tempDir as NSString).appendingPathComponent("key.pem")
+
         let status = CertificateManager.checkCertificateStatus(
-            certPath: "certs/cert.pem",
-            keyPath: "certs/key.pem",
+            certPath: certPath,
+            keyPath: keyPath,
             thresholdDays: 30
         )
         if case .valid(let days, _) = status {
@@ -2159,11 +2174,26 @@ struct StudentAppBackendTests {
     }
 
     @Test("Certificate: High threshold triggers .expiringSoon status")
-    func certificateStatusExpiringSoon() {
+    func certificateStatusExpiringSoon() throws {
+        let tempDir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+        // Generate a valid certificate first
+        _ = try CertificateManager.renewDevelopmentCertificates(
+            certDir: tempDir,
+            days: 365,
+            thresholdDays: 30,
+            force: true,
+            environment: .development
+        )
+
+        let certPath = (tempDir as NSString).appendingPathComponent("cert.pem")
+        let keyPath = (tempDir as NSString).appendingPathComponent("key.pem")
+
         // Since the certificate is valid for 365 days, a threshold of 400 days makes it 'expiring soon'
         let status = CertificateManager.checkCertificateStatus(
-            certPath: "certs/cert.pem",
-            keyPath: "certs/key.pem",
+            certPath: certPath,
+            keyPath: keyPath,
             thresholdDays: 400
         )
         if case .expiringSoon = status {
