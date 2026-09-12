@@ -127,6 +127,15 @@ func configureTLS(_ app: Application) throws {
 
     let certPath = Environment.get("TLS_CERT") ?? "certs/cert.pem"
     let keyPath = Environment.get("TLS_KEY") ?? "certs/key.pem"
+
+    let flag = Environment.get("ENABLE_HTTPS")?.lowercased()
+    let tlsRequested = flag == "1" || flag == "true" || flag == "yes"
+
+    // In development environments, run certificate pre-flight check if HTTPS is requested
+    if tlsRequested && app.environment == .development {
+        _ = try? CertificateManager.ensureDevelopmentCertificates(app: app)
+    }
+
     let tlsEnabled = shouldEnableTLS(certPath: certPath, keyPath: keyPath)
 
     #if DEBUG

@@ -508,27 +508,39 @@ The current test suite includes cases for:
 
 ### Native Local HTTPS
 
-If running the Vapor app directly and you want local HTTPS, generate a self-signed certificate with `CN=localhost`.
+If running the Vapor app directly with local HTTPS (`ENABLE_HTTPS=true`), self-signed certificates with modern Subject Alternative Names (`DNS:localhost, IP:127.0.0.1, IP:::1`) are automatically managed.
 
-1. Generate the certificate and key.
+#### 1. Automated Certificate Renewal Script
 
-```bash
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout key.pem -out cert.pem -days 365 \
-  -subj "/CN=localhost"
-```
-
-2. Export a `.p12` bundle if needed.
+Use [`scripts/renew-dev-certs.sh`](scripts/renew-dev-certs.sh) to inspect, generate, or renew development certificates:
 
 ```bash
-openssl pkcs12 -export -out localhost.p12 \
-  -inkey key.pem -in cert.pem \
-  -name "Vapor Localhost Cert"
+# Check if certificates are healthy without modifying files
+./scripts/renew-dev-certs.sh --check-only
+
+# Generate or renew certificates (idempotent: skips if valid > 30 days)
+./scripts/renew-dev-certs.sh
+
+# Force regeneration immediately
+./scripts/renew-dev-certs.sh --force
 ```
 
-3. Import `cert.pem` into macOS Keychain and set it to trust for local use.
-4. Restart the Vapor application so it reloads the certificates.
-5. Test the endpoint again.
+The script automatically generates:
+- `certs/cert.pem` (Public X.509 certificate with SAN extensions; `0644`)
+- `certs/key.pem` (2048-bit RSA private key; `0600`)
+- `certs/localhost.p12` (PKCS#12 bundle for Keychain & iOS Simulator trust; `0600`)
+
+#### 2. Automatic Startup Pre-Flight Check
+
+When `ENABLE_HTTPS=true` is set in `.development`, `CertificateManager` automatically inspects certificate expiration during server startup (`configureTLS`). If missing or expiring within 30 days (`DEV_CERT_RENEWAL_THRESHOLD_DAYS`), it automatically refreshes them (can be disabled with `AUTO_RENEW_DEV_CERTS=false`).
+
+*Note: Self-signed certificate auto-renewal is strictly forbidden in `.production`.*
+
+#### 3. Trusting the Certificate for Local Testing
+
+Import `certs/cert.pem` or `certs/localhost.p12` into macOS Keychain (or iOS Simulator) and mark it as trusted for SSL.
+
+Then test local HTTPS:
 
 ```bash
 curl https://localhost:8080/auth/login \

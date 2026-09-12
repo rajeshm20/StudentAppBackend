@@ -312,4 +312,29 @@ enum AppConfig {
             return environment == .production ? .verifyFull : .noVerify
         }
     }
+
+    // MARK: - Development Certificate Auto-Renewal
+
+    /// Determines whether development TLS certificates should be automatically generated/renewed if expired or missing.
+    /// In .development, defaults to true unless explicitly disabled with AUTO_RENEW_DEV_CERTS=false/0/no/off.
+    /// In .production and .testing, defaults to false (strictly prohibited in production).
+    static func autoRenewDevCerts(for environment: Environment) -> Bool {
+        guard environment != .production else {
+            return false
+        }
+        guard let raw = Environment.get("AUTO_RENEW_DEV_CERTS")?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
+            return environment == .development
+        }
+        return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
+    }
+
+    /// Number of days before certificate expiration to trigger an automated renewal warning or refresh.
+    /// Defaults to 30 days. Configurable via DEV_CERT_RENEWAL_THRESHOLD_DAYS.
+    static func devCertRenewalThresholdDays(for environment: Environment) -> Int {
+        guard let raw = Environment.get("DEV_CERT_RENEWAL_THRESHOLD_DAYS")?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let days = Int(raw), days >= 1 else {
+            return 30
+        }
+        return days
+    }
 }
