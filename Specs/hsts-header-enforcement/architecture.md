@@ -58,21 +58,29 @@ This document outlines the architectural flow, security boundaries, and middlewa
 +-------------------------------------------------------------------------------+
 ```
 
-## 3. RFC 6797 §7.2 Compliance
+## 3. RFC 6797 §7.2 Compliance & Cache Separation
 
 RFC 6797 Section 7.2 states:
 > An HTTP host MUST NOT include the STS header field in HTTP responses conveyed over non-secure transport.
 
-When requests are sent directly to Vapor or via plain HTTP without an `X-Forwarded-Proto: https` header:
-- `isSecureConnection(request)` evaluates to `false`.
+When requests are sent directly to Vapor or via plain HTTP without an `X-Forwarded-Proto: https` or RFC 7239 `Forwarded: proto=https` header:
+- `isSecureConnection(request, environment: env)` evaluates to `false`.
 - `SecurityHeadersMiddleware` explicitly strips or avoids attaching `Strict-Transport-Security`.
 - Baseline security headers (`X-Content-Type-Options`, `X-Frame-Options`, etc.) are retained.
+- When proxy headers are trusted, `Vary: X-Forwarded-Proto` is added to responses so downstream caches/CDNs do not serve plain HTTP cached responses over HTTPS or vice-versa (RFC 9111).
 
 ## 4. Configuration Matrix
 
 | Environment Variable | Default Value | Description |
 | :--- | :--- | :--- |
-| `HSTS_ENABLED` | `true` | Enables or disables HSTS header emission |
-| `HSTS_MAX_AGE` | `63072000` | Max-age duration in seconds (2 years) |
-| `HSTS_INCLUDE_SUBDOMAINS` | `true` | Includes `includeSubDomains` directive |
-| `HSTS_PRELOAD` | `true` | Includes `preload` directive for browser preload eligibility |
+| `HSTS_ENABLED` | `false` (dev/test)<br>`true` (prod) | Enables or disables HSTS header emission. Gated off in dev/test by default. |
+| `HSTS_MAX_AGE` | `2592000` | Max-age duration in seconds (30 days safe rollout default) |
+| `HSTS_INCLUDE_SUBDOMAINS` | `false` | Includes `includeSubDomains` directive (requires explicit opt-in) |
+| `HSTS_PRELOAD` | `false` | Includes `preload` directive (requires explicit opt-in + validation) |
+| `TRUST_PROXY_HEADERS` | `true` | Evaluates forwarded headers from reverse proxies. Set `false` if exposed directly. |
+
+## 5. Emergency Rollback Architecture
+If an operational emergency occurs (e.g. certificate expiration, temporary HTTP fallback, or broken subdomain):
+1. Operator sets `HSTS_MAX_AGE=0` in environment.
+2. `AppConfig.hstsHeaderValue` renders `Strict-Transport-Security: max-age=0`.
+3. Browsers receiving `max-age=0` instantly evict the HSTS policy for the domain.

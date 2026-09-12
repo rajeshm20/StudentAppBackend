@@ -137,25 +137,31 @@ enum AppConfig {
 
     // MARK: - HSTS (HTTP Strict Transport Security)
 
-    /// Standard HSTS max-age default: 2 years (63,072,000 seconds).
-    /// Complies with Chrome/Firefox preload list eligibility requirements (minimum 1 year).
-    static let defaultHSTSMaxAge: Int = 63_072_000
+    /// Safe rollout HSTS max-age default: 30 days (2,592,000 seconds).
+    /// A conservative default avoids extended lockouts during rollout.
+    /// Can be increased up to 1-2 years (e.g. 63072000) for preload list submission once fully vetted.
+    static let defaultHSTSMaxAge: Int = 2_592_000
+
+    /// Minimum max-age required by browser preload lists (1 year = 31,536,000 seconds).
+    static let minimumPreloadMaxAge: Int = 31_536_000
 
     /// Determines whether HSTS header generation is enabled.
-    /// Enabled by default in all environments unless explicitly disabled with HSTS_ENABLED=false/0/no/off.
+    /// In production, defaults to true unless explicitly disabled with HSTS_ENABLED=false/0/no/off.
+    /// In non-production environments (development, testing), defaults to false to avoid unexpected caching
+    /// unless explicitly enabled with HSTS_ENABLED=true/1/yes/on.
     static func isHSTSEnabled(for environment: Environment) -> Bool {
         guard
             let raw = Environment.get("HSTS_ENABLED")?.trimmingCharacters(
                 in: .whitespacesAndNewlines
             ).lowercased()
         else {
-            return true
+            return environment == .production
         }
-        return raw != "false" && raw != "0" && raw != "no" && raw != "off"
+        return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
     }
 
     /// Returns the HSTS max-age directive in seconds.
-    /// Defaults to 63072000 (2 years). Rejects negative values.
+    /// Defaults to 2,592,000 (30 days rollout default). Rejects negative or non-integer values.
     static func hstsMaxAge(for environment: Environment) throws -> Int {
         guard
             let raw = Environment.get("HSTS_MAX_AGE")?.trimmingCharacters(
@@ -168,30 +174,45 @@ enum AppConfig {
         guard let seconds = Int(raw), seconds >= 0 else {
             throw Abort(
                 .internalServerError,
-                reason: "Invalid HSTS_MAX_AGE: '\(raw)'. Must be a non-negative integer."
+                reason: "Invalid HSTS_MAX_AGE: '\(raw)'. Must be a non-negative integer representing seconds."
             )
         }
         return seconds
     }
 
     /// Determines whether to include the includeSubDomains directive.
-    /// Defaults to true unless explicitly set to false/0/no/off.
+    /// Defaults to false for safe phased rollout. Requires explicit opt-in via HSTS_INCLUDE_SUBDOMAINS=true/1/yes/on.
     static func hstsIncludeSubDomains(for environment: Environment) -> Bool {
         guard
             let raw = Environment.get("HSTS_INCLUDE_SUBDOMAINS")?.trimmingCharacters(
                 in: .whitespacesAndNewlines
             ).lowercased()
         else {
-            return true
+            return false
         }
-        return raw != "false" && raw != "0" && raw != "no" && raw != "off"
+        return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
     }
 
     /// Determines whether to include the preload directive.
-    /// Defaults to true unless explicitly set to false/0/no/off.
+    /// Defaults to false to prevent accidental and irreversible browser preload list inclusion.
+    /// Requires explicit opt-in via HSTS_PRELOAD=true/1/yes/on.
     static func hstsPreload(for environment: Environment) -> Bool {
         guard
             let raw = Environment.get("HSTS_PRELOAD")?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).lowercased()
+        else {
+            return false
+        }
+        return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
+    }
+
+    /// Determines whether to trust forwarded headers (X-Forwarded-Proto, Forwarded).
+    /// Defaults to true in containerized and reverse-proxy deployments where edge proxies (Caddy, ALB, Nginx) terminate TLS.
+    /// Set to false (TRUST_PROXY_HEADERS=false) if the backend is exposed directly to untrusted clients.
+    static func trustProxyHeaders(for environment: Environment) -> Bool {
+        guard
+            let raw = Environment.get("TRUST_PROXY_HEADERS")?.trimmingCharacters(
                 in: .whitespacesAndNewlines
             ).lowercased()
         else {
@@ -256,7 +277,26 @@ enum AppConfig {
 
         // Validate HSTS configuration if enabled in production
         if isHSTSEnabled(for: environment) {
-            _ = try hstsMaxAge(for: environment)
+            let maxAge = try hstsMaxAge(for: environment)
+
+            // If preload directive is enabled, enforce preload submission eligibility requirements:
+            // Chrome and Firefox require max-age >= 1 year (31,536,000s) and includeSubDomains.
+            if hstsPreload(for: environment) {
+                guard hstsIncludeSubDomains(for: environment) else {
+                    throw Abort(
+                        .internalServerError,
+                        reason:
+                            "HSTS_PRELOAD=true requires HSTS_INCLUDE_SUBDOMAINS=true per browser preload list requirements."
+                    )
+                }
+                guard maxAge >= minimumPreloadMaxAge else {
+                    throw Abort(
+                        .internalServerError,
+                        reason:
+                            "HSTS_PRELOAD=true requires HSTS_MAX_AGE >= \(minimumPreloadMaxAge) (1 year) per browser preload list requirements (currently \(maxAge))."
+                    )
+                }
+            }
         }
     }
 

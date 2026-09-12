@@ -35,23 +35,25 @@ HTTP Strict Transport Security (HSTS, defined in RFC 6797) is a critical securit
 - **System Administrator / DevOps**: Controls environment configuration parameters.
 
 ## 5. Functional Requirements
-- **FR-001**: The server MUST attach the `Strict-Transport-Security` header to all HTTP responses when the connection is secure (direct HTTPS or `X-Forwarded-Proto: https`).
+- **FR-001**: The server MUST attach the `Strict-Transport-Security` header to all HTTP responses when the connection is secure (direct HTTPS or verified `X-Forwarded-Proto: https` / RFC 7239 `Forwarded: proto=https`).
 - **FR-002**: The server MUST NOT attach the `Strict-Transport-Security` header to HTTP responses conveyed over unencrypted transport (RFC 6797 §7.2).
 - **FR-003**: The server MUST include `Strict-Transport-Security` on all HTTPS error responses (including 400, 401, 403, 404, 429, and 500).
-- **FR-004**: The default HSTS header value MUST be `max-age=63072000; includeSubDomains; preload` (2 years, meeting HSTS preload requirements).
-- **FR-005**: The server MUST support configuring `HSTS_MAX_AGE` with non-negative integer values.
-- **FR-006**: The server MUST support toggling `includeSubDomains` via `HSTS_INCLUDE_SUBDOMAINS` (default: true).
-- **FR-007**: The server MUST support toggling `preload` via `HSTS_PRELOAD` (default: true).
-- **FR-008**: The server MUST support disabling HSTS via `HSTS_ENABLED=false` for specialized local testing environments.
+- **FR-004**: The default safe rollout HSTS header value in production MUST be `max-age=2592000` (30 days rollout default, preventing permanent lockouts).
+- **FR-005**: The server MUST support configuring `HSTS_MAX_AGE` with non-negative integer values, including `HSTS_MAX_AGE=0` for emergency policy revocation.
+- **FR-006**: The server MUST require explicit opt-in for `includeSubDomains` via `HSTS_INCLUDE_SUBDOMAINS=true` (default: false for subdomain safety).
+- **FR-007**: The server MUST require explicit opt-in for `preload` via `HSTS_PRELOAD=true` (default: false to prevent accidental browser preload list inclusion).
+- **FR-008**: The server MUST default `HSTS_ENABLED` to `false` in development/testing environments to avoid unexpected browser caching, and default to `true` in production.
 - **FR-009**: Baseline security headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy`, `Content-Security-Policy`) MUST remain present on all responses regardless of transport protocol.
+- **FR-010**: The server MUST add `Vary: X-Forwarded-Proto` when proxy headers are trusted to prevent intermediate cache poisoning across HTTP and HTTPS.
 
 ## 6. Non-Functional Requirements
-- **NFR-001 (Security)**: Full adherence to RFC 6797 and OWASP Secure Headers Project guidelines.
+- **NFR-001 (Security)**: Full adherence to RFC 6797, RFC 9111, and OWASP Secure Headers Project guidelines.
 - **NFR-002 (Performance)**: Transport check and header injection must introduce negligible overhead (< 0.1ms).
-- **NFR-003 (Reliability)**: Zero regressions for local development, CI test suites, and Docker containerized deployments.
+- **NFR-003 (Reliability)**: Safe defaults prevent domain lockouts and service outages during incremental rollout.
 
 ## 7. Business & Validation Rules
 - **BR-001**: In production, `HSTS_MAX_AGE` must not be set to a negative number.
 - **BR-002**: If `HSTS_ENABLED` is false, no `Strict-Transport-Security` header shall be emitted.
+- **BR-003**: If `HSTS_PRELOAD=true` is configured in production, the server MUST enforce that `HSTS_INCLUDE_SUBDOMAINS=true` and `HSTS_MAX_AGE >= 31536000` (1 year) per browser preload submission requirements, failing startup fast if violated.
 - **VAL-001**: `HSTS_MAX_AGE` must parse to a valid non-negative integer or fail with a 500 Internal Server Error configuration abort.
-- **VAL-002**: Boolean environment flags (`HSTS_ENABLED`, `HSTS_INCLUDE_SUBDOMAINS`, `HSTS_PRELOAD`) accept standard truthy/falsy values (`true`/`false`, `1`/`0`, `yes`/`no`).
+- **VAL-002**: Boolean environment flags (`HSTS_ENABLED`, `HSTS_INCLUDE_SUBDOMAINS`, `HSTS_PRELOAD`, `TRUST_PROXY_HEADERS`) accept standard truthy/falsy values (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`).

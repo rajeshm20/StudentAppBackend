@@ -587,17 +587,60 @@ The backend enforces strict TLS 1.2 minimum versioning and forward-secret AEAD c
 The backend enforces HTTP Strict Transport Security (HSTS) in compliance with **RFC 6797 §7.2** to protect against SSL-stripping and protocol downgrade attacks.
 
 #### RFC 6797 Section 7.2 Guarantees
-- **HTTPS Responses Only:** The `Strict-Transport-Security` header is injected **only** when the transport is encrypted (direct TLS or reverse-proxy `X-Forwarded-Proto: https`). Unencrypted HTTP responses omit the header to prevent spoofing or cache poisoning by MITM adversaries.
-- **Error Response Retention:** Because `SecurityHeadersMiddleware` wraps the entire middleware pipeline (including `ErrorMiddleware`), all error responses (400, 401, 403, 404, 429, 500) over HTTPS retain the HSTS and security headers.
+- **HTTPS Responses Only:** The `Strict-Transport-Security` header is injected **only** when the transport is encrypted (direct TLS or verified reverse-proxy `X-Forwarded-Proto: https` / RFC 7239 `Forwarded: proto=https`). Unencrypted HTTP responses strictly omit the header to prevent spoofing or cache poisoning by MITM adversaries.
+- **Error Response Retention:** Because `SecurityHeadersMiddleware` wraps the entire middleware pipeline (including `ErrorMiddleware`), all error responses (400, 401, 403, 404, 429, 500) over HTTPS retain HSTS and security headers.
+- **Cache Separation:** Emits `Vary: X-Forwarded-Proto` when proxy headers are trusted, preventing intermediate caches from serving HTTP-response headers to HTTPS clients or vice-versa (RFC 9111).
 
 #### Environment Variables
 
 | Variable | Default | Allowed Values | Purpose |
 | :--- | :--- | :--- | :--- |
-| `HSTS_ENABLED` | `true` | `true`, `false`, `1`, `0` | Enables or disables HSTS header emission. |
-| `HSTS_MAX_AGE` | `63072000` | Integer >= 0 | Max-age duration in seconds (2 years default for preload list qualification). |
-| `HSTS_INCLUDE_SUBDOMAINS` | `true` | `true`, `false`, `1`, `0` | Includes the `includeSubDomains` directive. |
-| `HSTS_PRELOAD` | `true` | `true`, `false`, `1`, `0` | Includes the `preload` directive for browser HSTS preload list eligibility. |
+| `HSTS_ENABLED` | `false` (dev/test)<br>`true` (prod) | `true`, `false`, `1`, `0` | Enables or disables HSTS header emission. Gated off in dev/test by default. |
+| `HSTS_MAX_AGE` | `2592000` (30 days) | Integer >= 0 | Max-age duration in seconds. Conservative rollout default prevents prolonged lockouts. |
+| `HSTS_INCLUDE_SUBDOMAINS` | `false` | `true`, `false`, `1`, `0` | Requires explicit opt-in once all subdomains support HTTPS. |
+| `HSTS_PRELOAD` | `false` | `true`, `false`, `1`, `0` | Requires explicit opt-in, `HSTS_INCLUDE_SUBDOMAINS=true`, and `HSTS_MAX_AGE >= 31536000`. |
+| `TRUST_PROXY_HEADERS` | `true` | `true`, `false`, `1`, `0` | Whether to trust forwarding headers (`X-Forwarded-Proto`). Set `false` if exposed directly. |
+
+#### Operational Runbook & Phased Rollout Guide
+
+##### 1. Phased Rollout Schedule
+To avoid accidental domain-wide lockouts, roll out HSTS incrementally:
+- **Phase 1 (Staging & Initial Canary):** `HSTS_MAX_AGE=86400` (1 day), `HSTS_INCLUDE_SUBDOMAINS=false`, `HSTS_PRELOAD=false`. Verify health checks and API clients.
+- **Phase 2 (Production Rollout Default):** `HSTS_MAX_AGE=2592000` (30 days). Observe for one full release cycle.
+- **Phase 3 (Long-term Hardening):** `HSTS_MAX_AGE=31536000` (1 year) or `63072000` (2 years).
+- **Phase 4 (Subdomain Protection):** Set `HSTS_INCLUDE_SUBDOMAINS=true` only after completing the Subdomain Readiness Audit.
+- **Phase 5 (Preload List Submission):** Set `HSTS_PRELOAD=true`, verify `max-age >= 31536000`, and submit to [hstspreload.org](https://hstspreload.org).
+
+##### 2. Emergency Rollback / Revocation Procedure
+If a TLS certificate fails to renew, a service is moved to HTTP, or an unmigrated subdomain breaks:
+1. Immediately deploy an environment override:
+   ```bash
+   HSTS_MAX_AGE=0
+   ```
+2. Any client connecting to the service will receive `Strict-Transport-Security: max-age=0`, which instructs browsers to immediately delete their cached HSTS pin for the domain.
+3. Update edge proxies (Caddy, Nginx, CloudFront) to also emit `max-age=0` or strip the header temporarily.
+
+##### 3. Subdomain Readiness Audit Checklist
+Before setting `HSTS_INCLUDE_SUBDOMAINS=true`:
+- [ ] Audit all public DNS records (`*.openedschool.com`, internal portals, admin panels, dev/staging subdomains).
+- [ ] Confirm valid, auto-renewing TLS certificates exist for every subdomain.
+- [ ] Confirm no legacy HTTP-only services or mixed-content assets exist under the base domain.
+
+##### 4. Reverse Proxy Hardening & Anti-Spoofing
+Reverse proxies MUST strip client-supplied forwarding headers before forwarding to the backend:
+- **Caddy:**
+  ```caddyfile
+  reverse_proxy app:8080 {
+      header_up X-Forwarded-Proto https
+      header_up X-Forwarded-Host {host}
+  }
+  ```
+- **Nginx:**
+  ```nginx
+  proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_set_header Host $host;
+  ```
+- **AWS ALB / CloudFront:** Configure viewer protocol policy to `redirect-to-https` and forward the verified protocol header.
 
 ---
 

@@ -1735,25 +1735,36 @@ struct StudentAppBackendTests {
 
     // MARK: - HSTS (HTTP Strict Transport Security) Tests
 
-    @Test("HSTS: Default configuration provides 2-year preload-ready header")
+    @Test("HSTS: Safe rollout default configuration provides 30-day header and disabled in non-prod")
     func hstsDefaultConfiguration() throws {
         unsetenv("HSTS_ENABLED")
         unsetenv("HSTS_MAX_AGE")
         unsetenv("HSTS_INCLUDE_SUBDOMAINS")
         unsetenv("HSTS_PRELOAD")
 
-        let header = try AppConfig.hstsHeaderValue(for: .development)
-        #expect(header == "max-age=63072000; includeSubDomains; preload")
-        #expect(AppConfig.isHSTSEnabled(for: .development))
-        #expect(try AppConfig.hstsMaxAge(for: .development) == 63_072_000)
-        #expect(AppConfig.hstsIncludeSubDomains(for: .development))
-        #expect(AppConfig.hstsPreload(for: .development))
+        // In non-production (.development, .testing), HSTS defaults to disabled to prevent accidental caching
+        #expect(!AppConfig.isHSTSEnabled(for: .development))
+        #expect(!AppConfig.isHSTSEnabled(for: .testing))
+        #expect(try AppConfig.hstsHeaderValue(for: .development) == nil)
+
+        // In production, HSTS defaults to enabled with safe 30-day rollout settings
+        #expect(AppConfig.isHSTSEnabled(for: .production))
+        #expect(try AppConfig.hstsMaxAge(for: .production) == 2_592_000)
+        #expect(!AppConfig.hstsIncludeSubDomains(for: .production))
+        #expect(!AppConfig.hstsPreload(for: .production))
+
+        let prodHeader = try AppConfig.hstsHeaderValue(for: .production)
+        #expect(prodHeader == "max-age=2592000")
     }
 
     @Test("HSTS: Custom max-age override via HSTS_MAX_AGE")
     func hstsCustomMaxAge() throws {
+        setenv("HSTS_ENABLED", "true", 1)
         setenv("HSTS_MAX_AGE", "31536000", 1)
-        defer { unsetenv("HSTS_MAX_AGE") }
+        defer {
+            unsetenv("HSTS_ENABLED")
+            unsetenv("HSTS_MAX_AGE")
+        }
 
         #expect(try AppConfig.hstsMaxAge(for: .development) == 31_536_000)
         let header = try AppConfig.hstsHeaderValue(for: .development)
@@ -1770,31 +1781,46 @@ struct StudentAppBackendTests {
         }
     }
 
-    @Test("HSTS: Toggling includeSubDomains and preload off")
-    func hstsDirectiveToggles() throws {
-        setenv("HSTS_INCLUDE_SUBDOMAINS", "false", 1)
-        setenv("HSTS_PRELOAD", "false", 1)
+    @Test("HSTS: Explicit opt-in for includeSubDomains and preload")
+    func hstsExplicitOptInSubDomainsAndPreload() throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        setenv("HSTS_MAX_AGE", "63072000", 1)
+        setenv("HSTS_INCLUDE_SUBDOMAINS", "true", 1)
+        setenv("HSTS_PRELOAD", "true", 1)
         defer {
+            unsetenv("HSTS_ENABLED")
+            unsetenv("HSTS_MAX_AGE")
             unsetenv("HSTS_INCLUDE_SUBDOMAINS")
             unsetenv("HSTS_PRELOAD")
         }
 
-        #expect(!AppConfig.hstsIncludeSubDomains(for: .development))
-        #expect(!AppConfig.hstsPreload(for: .development))
+        #expect(AppConfig.hstsIncludeSubDomains(for: .development))
+        #expect(AppConfig.hstsPreload(for: .development))
 
         let header = try AppConfig.hstsHeaderValue(for: .development)
-        #expect(header == "max-age=63072000")
-        #expect(header?.contains("includeSubDomains") == false)
-        #expect(header?.contains("preload") == false)
+        #expect(header == "max-age=63072000; includeSubDomains; preload")
     }
 
-    @Test("HSTS: Disabling HSTS suppresses header output")
+    @Test("HSTS: Emergency revocation with max-age=0")
+    func hstsEmergencyRevocation() throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        setenv("HSTS_MAX_AGE", "0", 1)
+        defer {
+            unsetenv("HSTS_ENABLED")
+            unsetenv("HSTS_MAX_AGE")
+        }
+
+        let header = try AppConfig.hstsHeaderValue(for: .development)
+        #expect(header == "max-age=0")
+    }
+
+    @Test("HSTS: Disabling HSTS in production suppresses header output")
     func hstsDisabledSuppressesHeader() throws {
         setenv("HSTS_ENABLED", "false", 1)
         defer { unsetenv("HSTS_ENABLED") }
 
-        #expect(!AppConfig.isHSTSEnabled(for: .development))
-        #expect(try AppConfig.hstsHeaderValue(for: .development) == nil)
+        #expect(!AppConfig.isHSTSEnabled(for: .production))
+        #expect(try AppConfig.hstsHeaderValue(for: .production) == nil)
     }
 
     @Test("HSTS: Production validation fails if HSTS_MAX_AGE is negative")
@@ -1811,10 +1837,66 @@ struct StudentAppBackendTests {
         }
     }
 
+    @Test("HSTS: Production validation fails if preload is enabled without includeSubDomains")
+    func validateProductionSecretsFailsOnPreloadWithoutSubdomains() {
+        setenv("DATABASE_PASSWORD", "secure_prod_password_123", 1)
+        setenv("HSTS_PRELOAD", "true", 1)
+        setenv("HSTS_INCLUDE_SUBDOMAINS", "false", 1)
+        setenv("HSTS_MAX_AGE", "31536000", 1)
+        defer {
+            unsetenv("DATABASE_PASSWORD")
+            unsetenv("HSTS_PRELOAD")
+            unsetenv("HSTS_INCLUDE_SUBDOMAINS")
+            unsetenv("HSTS_MAX_AGE")
+        }
+
+        #expect(throws: Abort.self) {
+            try AppConfig.validateProductionSecrets(for: .production)
+        }
+    }
+
+    @Test("HSTS: Production validation fails if preload is enabled with insufficient max-age")
+    func validateProductionSecretsFailsOnPreloadWithLowMaxAge() {
+        setenv("DATABASE_PASSWORD", "secure_prod_password_123", 1)
+        setenv("HSTS_PRELOAD", "true", 1)
+        setenv("HSTS_INCLUDE_SUBDOMAINS", "true", 1)
+        setenv("HSTS_MAX_AGE", "86400", 1)
+        defer {
+            unsetenv("DATABASE_PASSWORD")
+            unsetenv("HSTS_PRELOAD")
+            unsetenv("HSTS_INCLUDE_SUBDOMAINS")
+            unsetenv("HSTS_MAX_AGE")
+        }
+
+        #expect(throws: Abort.self) {
+            try AppConfig.validateProductionSecrets(for: .production)
+        }
+    }
+
+    @Test("HSTS: Production validation passes with eligible preload configuration")
+    func validateProductionSecretsPassesWithValidPreloadConfig() throws {
+        setenv("DATABASE_PASSWORD", "secure_prod_password_123", 1)
+        setenv("HSTS_PRELOAD", "true", 1)
+        setenv("HSTS_INCLUDE_SUBDOMAINS", "true", 1)
+        setenv("HSTS_MAX_AGE", "31536000", 1)
+        defer {
+            unsetenv("DATABASE_PASSWORD")
+            unsetenv("HSTS_PRELOAD")
+            unsetenv("HSTS_INCLUDE_SUBDOMAINS")
+            unsetenv("HSTS_MAX_AGE")
+        }
+
+        // Should not throw
+        try AppConfig.validateProductionSecrets(for: .production)
+    }
+
     @Test(
-        "HSTS: Integration — HTTPS request (via X-Forwarded-Proto) receives HSTS header and baseline security headers"
+        "HSTS: Integration — HTTPS request receives safe rollout HSTS header and baseline security headers"
     )
     func hstsHeaderPresentOnHTTPSRequest() async throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        defer { unsetenv("HSTS_ENABLED") }
+
         try await withApp { app in
             try await app.testing().test(
                 .GET, "health/live",
@@ -1826,7 +1908,7 @@ struct StudentAppBackendTests {
                     #expect(res.headers.contains(name: "Strict-Transport-Security"))
                     #expect(
                         res.headers.first(name: "Strict-Transport-Security")
-                            == "max-age=63072000; includeSubDomains; preload")
+                            == "max-age=2592000")
                     #expect(res.headers.first(name: "X-Content-Type-Options") == "nosniff")
                     #expect(res.headers.first(name: "X-Frame-Options") == "DENY")
                     #expect(
@@ -1838,6 +1920,7 @@ struct StudentAppBackendTests {
                     #expect(
                         res.headers.first(name: "Content-Security-Policy")?.contains(
                             "default-src 'self'") == true)
+                    #expect(res.headers.first(name: "Vary")?.contains("X-Forwarded-Proto") == true)
                 })
         }
     }
@@ -1846,6 +1929,9 @@ struct StudentAppBackendTests {
         "HSTS: Integration (RFC 6797 §7.2) — Plain HTTP request MUST NOT receive Strict-Transport-Security"
     )
     func hstsHeaderOmittedOnPlainHTTPRequest() async throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        defer { unsetenv("HSTS_ENABLED") }
+
         try await withApp { app in
             try await app.testing().test(
                 .GET, "health/live",
@@ -1863,10 +1949,75 @@ struct StudentAppBackendTests {
         }
     }
 
+    @Test("HSTS: Integration — Omitted by default in testing environment when HSTS_ENABLED is unset")
+    func hstsHeaderOmittedByDefaultInTesting() async throws {
+        unsetenv("HSTS_ENABLED")
+
+        try await withApp { app in
+            try await app.testing().test(
+                .GET, "health/live",
+                beforeRequest: { req in
+                    req.headers.add(name: "X-Forwarded-Proto", value: "https")
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    #expect(!res.headers.contains(name: "Strict-Transport-Security"))
+                    #expect(res.headers.first(name: "X-Content-Type-Options") == "nosniff")
+                })
+        }
+    }
+
+    @Test("HSTS: Integration — RFC 7239 Forwarded header activates HSTS")
+    func hstsHeaderWithRFC7239Forwarded() async throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        defer { unsetenv("HSTS_ENABLED") }
+
+        try await withApp { app in
+            try await app.testing().test(
+                .GET, "health/live",
+                beforeRequest: { req in
+                    req.headers.add(name: "Forwarded", value: "for=192.0.2.60;proto=https;by=203.0.113.43")
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    #expect(res.headers.contains(name: "Strict-Transport-Security"))
+                    #expect(
+                        res.headers.first(name: "Strict-Transport-Security")
+                            == "max-age=2592000")
+                })
+        }
+    }
+
+    @Test("HSTS: Integration — Untrusted proxy headers suppressed when TRUST_PROXY_HEADERS=false")
+    func hstsHeaderSuppressedWhenProxyHeadersUntrusted() async throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        setenv("TRUST_PROXY_HEADERS", "false", 1)
+        defer {
+            unsetenv("HSTS_ENABLED")
+            unsetenv("TRUST_PROXY_HEADERS")
+        }
+
+        try await withApp { app in
+            try await app.testing().test(
+                .GET, "health/live",
+                beforeRequest: { req in
+                    req.headers.add(name: "X-Forwarded-Proto", value: "https")
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    // Spoofed X-Forwarded-Proto must be ignored
+                    #expect(!res.headers.contains(name: "Strict-Transport-Security"))
+                })
+        }
+    }
+
     @Test(
         "HSTS: Integration — 404 Not Found error response over HTTPS retains HSTS and security headers"
     )
     func hstsHeaderPresentOn404ErrorResponse() async throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        defer { unsetenv("HSTS_ENABLED") }
+
         try await withApp { app in
             try await app.testing().test(
                 .GET, "non-existent-endpoint-path",
@@ -1876,6 +2027,9 @@ struct StudentAppBackendTests {
                 afterResponse: { res async throws in
                     #expect(res.status == .notFound)
                     #expect(res.headers.contains(name: "Strict-Transport-Security"))
+                    #expect(
+                        res.headers.first(name: "Strict-Transport-Security")
+                            == "max-age=2592000")
                     #expect(res.headers.first(name: "X-Content-Type-Options") == "nosniff")
                     #expect(res.headers.first(name: "X-Frame-Options") == "DENY")
                 })
@@ -1884,6 +2038,9 @@ struct StudentAppBackendTests {
 
     @Test("HSTS: Integration — 401 Unauthorized error response over HTTPS retains HSTS header")
     func hstsHeaderPresentOn401Unauthorized() async throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        defer { unsetenv("HSTS_ENABLED") }
+
         try await withApp { app in
             try await app.testing().test(
                 .GET, "students/\(UUID())",
@@ -1895,7 +2052,7 @@ struct StudentAppBackendTests {
                     #expect(res.headers.contains(name: "Strict-Transport-Security"))
                     #expect(
                         res.headers.first(name: "Strict-Transport-Security")
-                            == "max-age=63072000; includeSubDomains; preload")
+                            == "max-age=2592000")
                     #expect(res.headers.first(name: "X-Content-Type-Options") == "nosniff")
                 })
         }
@@ -1903,6 +2060,9 @@ struct StudentAppBackendTests {
 
     @Test("HSTS: Integration — 400 Bad Request validation error over HTTPS retains HSTS header")
     func hstsHeaderPresentOn400ValidationError() async throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        defer { unsetenv("HSTS_ENABLED") }
+
         try await withApp { app in
             let malformedPayload = ["email": "not-an-email"]
             try await app.testing().test(
@@ -1914,7 +2074,36 @@ struct StudentAppBackendTests {
                 afterResponse: { res async throws in
                     #expect(res.status == .badRequest)
                     #expect(res.headers.contains(name: "Strict-Transport-Security"))
+                    #expect(
+                        res.headers.first(name: "Strict-Transport-Security")
+                            == "max-age=2592000")
                     #expect(res.headers.first(name: "X-Content-Type-Options") == "nosniff")
+                })
+        }
+    }
+
+    @Test("HSTS: Integration — 500 Internal Server Error response over HTTPS retains HSTS header")
+    func hstsHeaderPresentOn500InternalServerError() async throws {
+        setenv("HSTS_ENABLED", "true", 1)
+        defer { unsetenv("HSTS_ENABLED") }
+
+        try await withApp { app in
+            app.get("test-error-500") { _ -> String in
+                throw Abort(.internalServerError, reason: "Simulated server failure")
+            }
+            try await app.testing().test(
+                .GET, "test-error-500",
+                beforeRequest: { req in
+                    req.headers.add(name: "X-Forwarded-Proto", value: "https")
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .internalServerError)
+                    #expect(res.headers.contains(name: "Strict-Transport-Security"))
+                    #expect(
+                        res.headers.first(name: "Strict-Transport-Security")
+                            == "max-age=2592000")
+                    #expect(res.headers.first(name: "X-Content-Type-Options") == "nosniff")
+                    #expect(res.headers.first(name: "X-Frame-Options") == "DENY")
                 })
         }
     }
