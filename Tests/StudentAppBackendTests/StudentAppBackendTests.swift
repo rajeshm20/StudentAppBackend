@@ -2299,6 +2299,10 @@ struct StudentAppBackendTests {
         setenv("DEV_CERT_RENEWAL_THRESHOLD_DAYS", "45", 1)
         #expect(AppConfig.devCertRenewalThresholdDays(for: .development) == 45)
         unsetenv("DEV_CERT_RENEWAL_THRESHOLD_DAYS")
+
+        setenv("DEV_CERT_RENEWAL_THRESHOLD_DAYS", "0", 1)
+        #expect(AppConfig.devCertRenewalThresholdDays(for: .development) == 0)
+        unsetenv("DEV_CERT_RENEWAL_THRESHOLD_DAYS")
     }
 
     @Test("Certificate: CLI script renew-dev-certs.sh execution and check-only flag")
@@ -2455,6 +2459,51 @@ struct StudentAppBackendTests {
         #expect(status.isHealthy)
         let p12File = (tempDir as NSString).appendingPathComponent("localhost.p12")
         #expect(FileManager.default.fileExists(atPath: p12File))
+    }
+
+    @Test("Certificate: Generated certificate includes Subject Alternative Names (DNS, IPv4, IPv6)")
+    func certificateSANExtensionContents() throws {
+        let tempDir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+        let status = try CertificateManager.renewDevelopmentCertificates(
+            certDir: tempDir,
+            days: 365,
+            thresholdDays: 30,
+            force: true,
+            sans: "DNS:localhost,IP:127.0.0.1,IP:::1",
+            environment: .development
+        )
+        #expect(status.isHealthy)
+
+        let certFile = (tempDir as NSString).appendingPathComponent("cert.pem")
+        #expect(FileManager.default.fileExists(atPath: certFile))
+
+        // Inspect certificate extensions using openssl x509
+        let process = Process()
+        let opensslPath: String
+        let candidates = ["/usr/bin/openssl", "/usr/local/bin/openssl", "/opt/homebrew/bin/openssl"]
+        opensslPath = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) ?? "/usr/bin/openssl"
+        process.executableURL = URL(fileURLWithPath: opensslPath)
+        process.arguments = ["x509", "-in", certFile, "-text", "-noout"]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        try process.run()
+        let certData = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        guard let certText = String(data: certData, encoding: .utf8) else {
+            Issue.record("Failed to decode cert text output")
+            return
+        }
+
+        #expect(certText.contains("Subject Alternative Name"))
+        #expect(certText.contains("DNS:localhost"))
+        #expect(certText.contains("127.0.0.1"))
+        #expect(certText.contains("0:0:0:0:0:0:0:1") || certText.contains("::1"))
     }
 }
 

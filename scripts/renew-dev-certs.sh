@@ -22,6 +22,8 @@ set -euo pipefail
 CERT_DIR="certs"
 DAYS=365
 THRESHOLD_DAYS=30
+# Default SAN includes localhost, IPv4 loopback (127.0.0.1), and IPv6 loopback (::1).
+# Note: "IP:::1" represents OpenSSL's "IP:" prefix concatenated with the IPv6 loopback literal "::1".
 SANS="DNS:localhost,IP:127.0.0.1,IP:::1"
 P12_PASS=""
 CHECK_ONLY=false

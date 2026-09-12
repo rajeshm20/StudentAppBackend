@@ -7,6 +7,11 @@
 
 import Foundation
 import Vapor
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// Represents the health and lifecycle status of an X.509 certificate.
 enum CertificateStatus: Equatable, Sendable {
@@ -75,6 +80,8 @@ struct CertificateManager: Sendable {
     }
 
     /// Renews development certificates in the specified directory.
+    /// Note: Default SAN "DNS:localhost,IP:127.0.0.1,IP:::1" contains "IP:::1" representing
+    /// the "IP:" prefix concatenated with IPv6 loopback literal "::1".
     /// Strictly prohibited when environment == .production.
     @discardableResult
     static func renewDevelopmentCertificates(
@@ -126,7 +133,17 @@ struct CertificateManager: Sendable {
             }
             exitCode = runProcess(executable: "/bin/bash", arguments: [scriptPath] + args)
         } else {
-            // Fallback direct OpenSSL generation if script is not found
+            // Fallback direct OpenSSL generation if script is not found.
+            // Temporarily set POSIX umask 0077 so newly created private key & PKCS#12 bundle
+            // are initialized with 0600 permissions atomically without any permission race condition window.
+            #if canImport(Darwin)
+            let prevUmask = Darwin.umask(0o077)
+            defer { _ = Darwin.umask(prevUmask) }
+            #elseif canImport(Glibc)
+            let prevUmask = Glibc.umask(0o077)
+            defer { _ = Glibc.umask(prevUmask) }
+            #endif
+
             let certExit = runOpenSSLProcess([
                 "req", "-x509", "-nodes", "-newkey", "rsa:2048",
                 "-keyout", keyFile,
@@ -287,9 +304,23 @@ struct CertificateManager: Sendable {
 
     // MARK: - Process Execution Helpers
 
+    private static var openSSLExecutablePath: String {
+        let candidates = [
+            "/usr/bin/openssl",
+            "/usr/local/bin/openssl",
+            "/opt/homebrew/bin/openssl"
+        ]
+        for path in candidates {
+            if FileManager.default.fileExists(atPath: path) {
+                return path
+            }
+        }
+        return "/usr/bin/openssl"
+    }
+
     private static func runOpenSSL(_ arguments: [String]) -> String? {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/openssl")
+        process.executableURL = URL(fileURLWithPath: openSSLExecutablePath)
         process.arguments = arguments
 
         let pipe = Pipe()
@@ -308,7 +339,7 @@ struct CertificateManager: Sendable {
     }
 
     private static func runOpenSSLProcess(_ arguments: [String]) -> Int32 {
-        runProcess(executable: "/usr/bin/openssl", arguments: arguments)
+        runProcess(executable: openSSLExecutablePath, arguments: arguments)
     }
 
     private static func runProcess(executable: String, arguments: [String]) -> Int32 {

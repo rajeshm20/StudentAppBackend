@@ -37,7 +37,7 @@ In `StudentAppBackend`, local development over HTTPS relies on self-signed X.509
 ## 5. Functional Requirements
 - **FR-001**: The system MUST inspect the expiration date (`notAfter`) of an existing certificate file and calculate remaining validity days.
 - **FR-002**: When a certificate is missing, expired, or expiring within `<threshold>` days (default: 30 days), the system MUST support regenerating a 2048-bit RSA private key and self-signed X.509 certificate.
-- **FR-003**: The generated certificate MUST include Subject Alternative Names (SAN) containing at least `DNS:localhost`, `IP:127.0.0.1`, and `IP:::1`.
+- **FR-003**: The generated certificate MUST include Subject Alternative Names (SAN) containing at least `DNS:localhost`, `IP:127.0.0.1`, and `IP:::1` (where `IP:::1` represents OpenSSL's `IP:` prefix concatenated with the IPv6 loopback literal `::1`).
 - **FR-004**: The system MUST support bundling the private key and certificate into a PKCS#12 file (`localhost.p12`) with an empty password.
 - **FR-005**: The system MUST set POSIX permissions to `0600` (read/write for owner only) for the private key and `.p12` file, and `0644` for the public certificate.
 - **FR-006**: The standalone script (`scripts/renew-dev-certs.sh`) MUST support:

@@ -329,10 +329,10 @@ enum AppConfig {
     }
 
     /// Number of days before certificate expiration to trigger an automated renewal warning or refresh.
-    /// Defaults to 30 days. Configurable via DEV_CERT_RENEWAL_THRESHOLD_DAYS.
+    /// Defaults to 30 days. Configurable via DEV_CERT_RENEWAL_THRESHOLD_DAYS (must be non-negative).
     static func devCertRenewalThresholdDays(for environment: Environment) -> Int {
         guard let raw = Environment.get("DEV_CERT_RENEWAL_THRESHOLD_DAYS")?.trimmingCharacters(in: .whitespacesAndNewlines),
-              let days = Int(raw), days >= 1 else {
+              let days = Int(raw), days >= 0 else {
             return 30
         }
         return days
