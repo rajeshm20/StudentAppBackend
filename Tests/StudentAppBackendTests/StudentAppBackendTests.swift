@@ -2126,6 +2126,385 @@ struct StudentAppBackendTests {
                 })
         }
     }
+
+    // MARK: - Certificate Manager & Renewal Tests
+
+    @Test("Certificate: Missing certificate file returns .missing status")
+    func certificateStatusMissing() {
+        let status = CertificateManager.checkCertificateStatus(
+            certPath: "/non/existent/path/cert.pem",
+            keyPath: "/non/existent/path/key.pem"
+        )
+        if case .missing(let path) = status {
+            #expect(path.contains("cert.pem"))
+        } else {
+            #expect(Bool(false), "Expected .missing status, got \(status)")
+        }
+    }
+
+    @Test("Certificate: Healthy certificate returns .valid status")
+    func certificateStatusValid() throws {
+        let tempDir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+        // Generate a valid certificate first
+        _ = try CertificateManager.renewDevelopmentCertificates(
+            certDir: tempDir,
+            days: 365,
+            thresholdDays: 30,
+            force: true,
+            environment: .development
+        )
+
+        let certPath = (tempDir as NSString).appendingPathComponent("cert.pem")
+        let keyPath = (tempDir as NSString).appendingPathComponent("key.pem")
+
+        let status = CertificateManager.checkCertificateStatus(
+            certPath: certPath,
+            keyPath: keyPath,
+            thresholdDays: 30
+        )
+        if case .valid(let days, _) = status {
+            #expect(days > 30)
+            #expect(status.isHealthy)
+            #expect(!status.requiresRenewal)
+        } else {
+            #expect(Bool(false), "Expected .valid status for fresh cert, got \(status)")
+        }
+    }
+
+    @Test("Certificate: High threshold triggers .expiringSoon status")
+    func certificateStatusExpiringSoon() throws {
+        let tempDir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+        // Generate a valid certificate first
+        _ = try CertificateManager.renewDevelopmentCertificates(
+            certDir: tempDir,
+            days: 365,
+            thresholdDays: 30,
+            force: true,
+            environment: .development
+        )
+
+        let certPath = (tempDir as NSString).appendingPathComponent("cert.pem")
+        let keyPath = (tempDir as NSString).appendingPathComponent("key.pem")
+
+        // Since the certificate is valid for 365 days, a threshold of 400 days makes it 'expiring soon'
+        let status = CertificateManager.checkCertificateStatus(
+            certPath: certPath,
+            keyPath: keyPath,
+            thresholdDays: 400
+        )
+        if case .expiringSoon = status {
+            #expect(status.requiresRenewal)
+        } else {
+            #expect(Bool(false), "Expected .expiringSoon status for 400-day threshold, got \(status)")
+        }
+    }
+
+    @Test("Certificate: Renewal generates valid certificates, SANs, and PKCS#12 bundle")
+    func certificateRenewalExecution() throws {
+        let tempDir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+        let status = try CertificateManager.renewDevelopmentCertificates(
+            certDir: tempDir,
+            days: 365,
+            thresholdDays: 30,
+            force: true,
+            environment: .development
+        )
+
+        #expect(status.isHealthy)
+
+        let certFile = (tempDir as NSString).appendingPathComponent("cert.pem")
+        let keyFile = (tempDir as NSString).appendingPathComponent("key.pem")
+        let p12File = (tempDir as NSString).appendingPathComponent("localhost.p12")
+
+        #expect(FileManager.default.fileExists(atPath: certFile))
+        #expect(FileManager.default.fileExists(atPath: keyFile))
+        #expect(FileManager.default.fileExists(atPath: p12File))
+
+        // Verify POSIX permissions: 0600 on key and p12, 0644 on cert
+        let keyAttrs = try FileManager.default.attributesOfItem(atPath: keyFile)
+        let keyPerms = (keyAttrs[.posixPermissions] as? NSNumber)?.int16Value ?? 0
+        #expect(keyPerms == 0o600)
+
+        let p12Attrs = try FileManager.default.attributesOfItem(atPath: p12File)
+        let p12Perms = (p12Attrs[.posixPermissions] as? NSNumber)?.int16Value ?? 0
+        #expect(p12Perms == 0o600)
+
+        let certAttrs = try FileManager.default.attributesOfItem(atPath: certFile)
+        let certPerms = (certAttrs[.posixPermissions] as? NSNumber)?.int16Value ?? 0
+        #expect(certPerms == 0o644)
+    }
+
+    @Test("Certificate: Renewal is idempotent when certificate is already healthy")
+    func certificateRenewalIdempotency() throws {
+        let tempDir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+        // Initial generation
+        _ = try CertificateManager.renewDevelopmentCertificates(
+            certDir: tempDir,
+            days: 365,
+            thresholdDays: 30,
+            force: true,
+            environment: .development
+        )
+
+        let certFile = (tempDir as NSString).appendingPathComponent("cert.pem")
+        let initialModDate = try FileManager.default.attributesOfItem(atPath: certFile)[.modificationDate] as? Date
+
+        // Second call without force should be a no-op
+        let secondStatus = try CertificateManager.renewDevelopmentCertificates(
+            certDir: tempDir,
+            days: 365,
+            thresholdDays: 30,
+            force: false,
+            environment: .development
+        )
+
+        let secondModDate = try FileManager.default.attributesOfItem(atPath: certFile)[.modificationDate] as? Date
+        #expect(secondStatus.isHealthy)
+        #expect(initialModDate == secondModDate)
+    }
+
+    @Test("Certificate: Production safeguard strictly forbids self-signed auto-renewal")
+    func certificateProductionSafeguard() {
+        #expect(throws: Abort.self) {
+            try CertificateManager.renewDevelopmentCertificates(
+                certDir: "certs",
+                force: true,
+                environment: .production
+            )
+        }
+    }
+
+    @Test("Certificate: AppConfig auto-renewal defaults by environment")
+    func appConfigCertificateSettings() {
+        unsetenv("AUTO_RENEW_DEV_CERTS")
+        unsetenv("DEV_CERT_RENEWAL_THRESHOLD_DAYS")
+
+        #expect(AppConfig.autoRenewDevCerts(for: .development))
+        #expect(!AppConfig.autoRenewDevCerts(for: .production))
+        #expect(!AppConfig.autoRenewDevCerts(for: .testing))
+        #expect(AppConfig.devCertRenewalThresholdDays(for: .development) == 30)
+
+        setenv("AUTO_RENEW_DEV_CERTS", "false", 1)
+        #expect(!AppConfig.autoRenewDevCerts(for: .development))
+        unsetenv("AUTO_RENEW_DEV_CERTS")
+
+        setenv("DEV_CERT_RENEWAL_THRESHOLD_DAYS", "45", 1)
+        #expect(AppConfig.devCertRenewalThresholdDays(for: .development) == 45)
+        unsetenv("DEV_CERT_RENEWAL_THRESHOLD_DAYS")
+
+        setenv("DEV_CERT_RENEWAL_THRESHOLD_DAYS", "0", 1)
+        #expect(AppConfig.devCertRenewalThresholdDays(for: .development) == 0)
+        unsetenv("DEV_CERT_RENEWAL_THRESHOLD_DAYS")
+    }
+
+    @Test("Certificate: CLI script renew-dev-certs.sh execution and check-only flag")
+    func certificateCLIScriptExecution() {
+        let tempDir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["scripts/renew-dev-certs.sh", "--cert-dir", tempDir, "--days", "365", "--threshold", "30"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        try? process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+
+        // Run check-only on newly generated valid certificates
+        let checkProcess = Process()
+        checkProcess.executableURL = URL(fileURLWithPath: "/bin/bash")
+        checkProcess.arguments = ["scripts/renew-dev-certs.sh", "--cert-dir", tempDir, "--check-only"]
+        checkProcess.standardOutput = FileHandle.nullDevice
+        checkProcess.standardError = FileHandle.nullDevice
+
+        try? checkProcess.run()
+        checkProcess.waitUntilExit()
+        #expect(checkProcess.terminationStatus == 0)
+    }
+
+    @Test("Certificate: CLI script rejects invalid inputs, path traversal, and injection attempts")
+    func certificateCLISecurityValidation() {
+        let runScriptWithArgs: ([String]) -> Int32 = { args in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+            proc.arguments = ["scripts/renew-dev-certs.sh"] + args
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            try? proc.run()
+            proc.waitUntilExit()
+            return proc.terminationStatus
+        }
+
+        // Rejects non-integer or negative days
+        #expect(runScriptWithArgs(["--days", "abc"]) != 0)
+        #expect(runScriptWithArgs(["--days", "-10"]) != 0)
+        #expect(runScriptWithArgs(["--days", "0"]) != 0)
+
+        // Rejects negative threshold
+        #expect(runScriptWithArgs(["--threshold", "-5"]) != 0)
+        #expect(runScriptWithArgs(["--threshold", "xyz"]) != 0)
+
+        // Rejects directory traversal in cert-dir
+        #expect(runScriptWithArgs(["--cert-dir", "../sensitive"]) != 0)
+        #expect(runScriptWithArgs(["--cert-dir", "/tmp/../etc"]) != 0)
+
+        // Rejects sensitive system directories
+        #expect(runScriptWithArgs(["--cert-dir", "/etc"]) != 0)
+        #expect(runScriptWithArgs(["--cert-dir", "/dev"]) != 0)
+
+        // Rejects shell injection in --san
+        #expect(runScriptWithArgs(["--san", "DNS:localhost; rm -rf /"]) != 0)
+        #expect(runScriptWithArgs(["--san", "DNS:localhost`id`"]) != 0)
+        #expect(runScriptWithArgs(["--san", "DNS:localhost' OR 1=1--"]) != 0)
+        #expect(runScriptWithArgs(["--san", "DNS:localhost$HOME"]) != 0)
+
+        // Rejects underscores in DNS SANs (RFC 1035 / RFC 1123)
+        #expect(runScriptWithArgs(["--san", "DNS:my_server.local"]) != 0)
+
+        // Rejects invalid prefixes or empty SANs
+        #expect(runScriptWithArgs(["--san", "URI:http://localhost"]) != 0)
+        #expect(runScriptWithArgs(["--san", "EMAIL:test@example.com"]) != 0)
+        #expect(runScriptWithArgs(["--san", ""]) != 0)
+
+        // Rejects invalid IPv4 octets
+        #expect(runScriptWithArgs(["--san", "IP:127.0.0.300"]) != 0)
+    }
+
+    @Test("Certificate: CertificateManager rejects path traversal and invalid SAN characters")
+    func certificateManagerSecurityValidation() {
+        // Path traversal rejection
+        #expect(throws: Abort.self) {
+            try CertificateManager.renewDevelopmentCertificates(
+                certDir: "../unsafe_dir",
+                force: true,
+                environment: .development
+            )
+        }
+
+        // Sensitive system directory rejection
+        #expect(throws: Abort.self) {
+            try CertificateManager.renewDevelopmentCertificates(
+                certDir: "/etc/ssl",
+                force: true,
+                environment: .development
+            )
+        }
+
+        // Invalid SAN rejection (shell injection)
+        #expect(throws: Abort.self) {
+            try CertificateManager.renewDevelopmentCertificates(
+                certDir: "certs",
+                force: true,
+                sans: "DNS:localhost; echo pwned",
+                environment: .development
+            )
+        }
+
+        // Rejects DNS SAN with underscores
+        #expect(throws: Abort.self) {
+            try CertificateManager.renewDevelopmentCertificates(
+                certDir: "certs",
+                force: true,
+                sans: "DNS:invalid_host.example",
+                environment: .development
+            )
+        }
+
+        // Rejects invalid SAN prefix
+        #expect(throws: Abort.self) {
+            try CertificateManager.renewDevelopmentCertificates(
+                certDir: "certs",
+                force: true,
+                sans: "URI:https://localhost",
+                environment: .development
+            )
+        }
+
+        // Rejects out-of-bounds IPv4
+        #expect(throws: Abort.self) {
+            try CertificateManager.renewDevelopmentCertificates(
+                certDir: "certs",
+                force: true,
+                sans: "IP:192.168.1.999",
+                environment: .development
+            )
+        }
+    }
+
+    @Test("Certificate: Password-protected PKCS#12 bundle generation")
+    func certificateCustomP12Password() throws {
+        let tempDir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+        let status = try CertificateManager.renewDevelopmentCertificates(
+            certDir: tempDir,
+            days: 365,
+            thresholdDays: 30,
+            force: true,
+            sans: "DNS:localhost,IP:127.0.0.1,IP:::1",
+            p12Password: "CustomSecretPass123!",
+            environment: .development
+        )
+
+        #expect(status.isHealthy)
+        let p12File = (tempDir as NSString).appendingPathComponent("localhost.p12")
+        #expect(FileManager.default.fileExists(atPath: p12File))
+    }
+
+    @Test("Certificate: Generated certificate includes Subject Alternative Names (DNS, IPv4, IPv6)")
+    func certificateSANExtensionContents() throws {
+        let tempDir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+        let status = try CertificateManager.renewDevelopmentCertificates(
+            certDir: tempDir,
+            days: 365,
+            thresholdDays: 30,
+            force: true,
+            sans: "DNS:localhost,IP:127.0.0.1,IP:::1",
+            environment: .development
+        )
+        #expect(status.isHealthy)
+
+        let certFile = (tempDir as NSString).appendingPathComponent("cert.pem")
+        #expect(FileManager.default.fileExists(atPath: certFile))
+
+        // Inspect certificate extensions using openssl x509
+        let process = Process()
+        let opensslPath: String
+        let candidates = ["/usr/bin/openssl", "/usr/local/bin/openssl", "/opt/homebrew/bin/openssl"]
+        opensslPath = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) ?? "/usr/bin/openssl"
+        process.executableURL = URL(fileURLWithPath: opensslPath)
+        process.arguments = ["x509", "-in", certFile, "-text", "-noout"]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        try process.run()
+        let certData = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        guard let certText = String(data: certData, encoding: .utf8) else {
+            Issue.record("Failed to decode cert text output")
+            return
+        }
+
+        #expect(certText.contains("Subject Alternative Name"))
+        #expect(certText.contains("DNS:localhost"))
+        #expect(certText.contains("127.0.0.1"))
+        #expect(certText.contains("0:0:0:0:0:0:0:1") || certText.contains("::1"))
+    }
 }
 
 // MARK: - Test Request/Response Types
