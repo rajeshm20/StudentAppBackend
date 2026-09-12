@@ -71,8 +71,19 @@ This feature operates at the infrastructure/tooling layer. No REST or GraphQL en
 No database tables, migrations, or queries required.
 
 ## 11. Security Requirements
-- Restrictive file permissions: private keys (`key.pem`) and PKCS#12 bundles (`localhost.p12`) restricted to owner permissions (`0600`).
-- Strict environment isolation: production environments require valid CA certificates and reject auto-renewal.
+- **SEC-001 (Input Validation)**:
+  - `--days` must be an integer >= 1.
+  - `--threshold` must be an integer >= 0.
+  - `--san` must strictly match regex `^[A-Za-z0-9_.:,-]+$`.
+- **SEC-002 (Path Traversal Protection)**:
+  - `--cert-dir` and Swift `certDir` must disallow directory traversal (`..`) and null bytes (`\0`).
+  - Sensitive system roots (`/`, `/etc`, `/dev`, `/sys`, `/proc`, `/bin`, `/usr`, `/sbin`) are explicitly forbidden.
+- **SEC-003 (File Permission Atomicity)**:
+  - Inode creation permissions are governed by `umask 0077`, ensuring private keys (`key.pem`) and PKCS#12 bundles (`localhost.p12`) are created with `0600` mode without any race condition window. Public cert is adjusted to `0644`.
+- **SEC-004 (PKCS#12 Password Security)**:
+  - Development `.p12` bundle uses empty password (`pass:`) intentionally for zero-friction macOS Keychain & iOS Simulator imports. It is strictly forbidden in `.production` and guarded by `0600` permissions.
+- **SEC-005 (Subprocess Pipe Reliability)**:
+  - Subprocess pipes for discarded output use `FileHandle.nullDevice` to eliminate OS buffer deadlock risks.
 
 ## 12. Concurrency Requirements
 - File generation runs sequentially during server initialization or CLI execution before concurrent worker threads accept incoming TLS connections.
@@ -88,6 +99,7 @@ No database tables, migrations, or queries required.
 - **AC-003**: Given a valid certificate with >30 days remaining, when `./scripts/renew-dev-certs.sh` runs without `--force`, it exits cleanly without re-generating files.
 - **AC-004**: Given `./scripts/renew-dev-certs.sh --check-only`, it exits with 0 for valid certs and 1 for expiring/missing certs without writing files.
 - **AC-005**: Given `app.environment == .production`, `CertificateManager` refuses to renew self-signed certificates and throws an error.
+- **AC-006**: Given malicious or invalid inputs (`--san`, `--days`, `--threshold`, `--cert-dir`), the system fails fast with error status 1 and prevents injection.
 
 ## 15. Test Scenarios
 ### Unit Tests
@@ -97,10 +109,26 @@ No database tables, migrations, or queries required.
 - `testCertificateRenewalExecution`: creates valid certificate with SANs and correct permissions.
 - `testCertificateRenewalIdempotency`: does not regenerate when certificate is healthy.
 - `testProductionSafetyGuard`: rejects renewal when environment is production.
+- `certificateCLISecurityValidation`: verifies script rejects invalid numeric values, directory traversal, sensitive system directories, and SAN injection attempts.
+- `certificateManagerSecurityValidation`: verifies Swift service rejects directory traversal, system paths, and invalid SAN characters.
 
 ### Integration Tests
 - Run `scripts/renew-dev-certs.sh --check-only` and `--force` in a temporary test directory.
 - Verify server startup with `ENABLE_HTTPS=true` under `.development` automatically ensures valid certificates.
+
+### Manual Security Testing Checklist (CHK-010)
+
+| Test ID | Vulnerability Tested | Test Command | Expected Output & Code |
+| :--- | :--- | :--- | :--- |
+| **SEC-TEST-01** | Shell Injection via SANs | `./scripts/renew-dev-certs.sh --san "DNS:localhost; rm -rf /"` | `Error: --san contains invalid characters...` (Exit: 1) |
+| **SEC-TEST-02** | Command Substitution via SANs | `./scripts/renew-dev-certs.sh --san 'DNS:localhost`id`'` | `Error: --san contains invalid characters...` (Exit: 1) |
+| **SEC-TEST-03** | Non-numeric `--days` | `./scripts/renew-dev-certs.sh --days abc` | `Error: --days must be a positive integer` (Exit: 1) |
+| **SEC-TEST-04** | Negative / Zero `--days` | `./scripts/renew-dev-certs.sh --days 0` | `Error: --days must be a positive integer` (Exit: 1) |
+| **SEC-TEST-05** | Negative `--threshold` | `./scripts/renew-dev-certs.sh --threshold -5` | `Error: --threshold must be a non-negative integer` (Exit: 1) |
+| **SEC-TEST-06** | Directory Traversal (`..`) | `./scripts/renew-dev-certs.sh --cert-dir "../sensitive"` | `Error: --cert-dir cannot contain directory traversal '..'` (Exit: 1) |
+| **SEC-TEST-07** | Sensitive System Path Target | `./scripts/renew-dev-certs.sh --cert-dir "/etc"` | `Error: --cert-dir cannot target sensitive system directories` (Exit: 1) |
+| **SEC-TEST-08** | Inode Permission Atomicity | `umask; ./scripts/renew-dev-certs.sh --force; stat -f "%Lp %N" certs/*` | Key/P12: `600`, Cert: `644` (Exit: 0) |
+| **SEC-TEST-09** | Production Environment Block | Run app in `.production` with `CertificateManager.renewDevelopmentCertificates()` | Throws `Abort(.internalServerError)` |
 
 ## 16. Observability
 - Server logs notice/warning on startup indicating certificate status, days remaining, and whether automatic renewal was executed.
