@@ -540,6 +540,9 @@ When `ENABLE_HTTPS=true` is set in `.development`, `CertificateManager` automati
 
 Import `certs/cert.pem` or `certs/localhost.p12` into macOS Keychain (or iOS Simulator) and mark it as trusted for SSL.
 
+> [!NOTE]
+> `certs/localhost.p12` uses an empty password by design for frictionless local development and iOS Simulator trust store imports. It is restricted by `0600` permissions (owner-accessible only), gitignored, and strictly forbidden in production.
+
 Then test local HTTPS:
 
 ```bash

@@ -79,3 +79,15 @@ The CLI script exposes a POSIX-compliant interface:
 - `./scripts/renew-dev-certs.sh --force` (immediate regeneration)
 - `./scripts/renew-dev-certs.sh --days 365 --threshold 30` (custom validity and renewal windows)
 - `./scripts/renew-dev-certs.sh --cert-dir <PATH>` (sandbox directory testing)
+
+## 6. Security Hardening & Vulnerability Mitigations
+
+| Vulnerability Vector | Mitigation Mechanism | Implementation Detail |
+| :--- | :--- | :--- |
+| **Shell Injection via SANs** | Whitelist validation & explicit quoting | Both script and Swift validate SANs against `^[A-Za-z0-9_.:,-]+$`. Quoted expansion in openssl calls. |
+| **Input Validation** | Strict numeric bounds checking | `--days` must be positive integer (`>= 1`); `--threshold` must be non-negative integer (`>= 0`). |
+| **Path Traversal** | Traversal & system path blacklisting | Rejects `..` sequences, null bytes, and sensitive system root paths (`/`, `/etc`, `/dev`, `/bin`, `/usr`, `/proc`, `/sys`). |
+| **Key Exposure Race Condition** | Inode creation `umask 0077` | Script applies `umask 0077` before file creation, guaranteeing private keys and PKCS#12 bundles are created with `0600` permissions. |
+| **PKCS#12 Password Security** | Local development restriction & file isolation | Empty password (`pass:`) intentionally used for seamless macOS Keychain & iOS Simulator trust store import without prompts. Protected by `0600` permissions and forbidden in production. |
+| **Subprocess Pipe Deadlocks** | `FileHandle.nullDevice` non-blocking pipes | Process stderr/stdout discarded directly to null device when unneeded, avoiding 64KB OS pipe buffer exhaustion deadlocks. |
+

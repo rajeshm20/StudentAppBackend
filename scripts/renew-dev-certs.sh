@@ -57,18 +57,41 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --days)
+            if ! [[ "$2" =~ ^[0-9]+$ ]] || [ "$2" -lt 1 ]; then
+                echo "Error: --days must be a positive integer" >&2
+                exit 1
+            fi
             DAYS="$2"
             shift 2
             ;;
         --threshold)
+            if ! [[ "$2" =~ ^[0-9]+$ ]] || [ "$2" -lt 0 ]; then
+                echo "Error: --threshold must be a non-negative integer" >&2
+                exit 1
+            fi
             THRESHOLD_DAYS="$2"
             shift 2
             ;;
         --cert-dir)
+            if [[ "$2" =~ \.\. ]]; then
+                echo "Error: --cert-dir cannot contain directory traversal '..'" >&2
+                exit 1
+            fi
+            case "$2" in
+                /|/etc|/etc/*|/dev|/dev/*|/sys|/sys/*|/proc|/proc/*|/bin|/bin/*|/usr|/usr/*|/sbin|/sbin/*)
+                    echo "Error: --cert-dir cannot target sensitive system directories" >&2
+                    exit 1
+                    ;;
+            esac
             CERT_DIR="$2"
             shift 2
             ;;
         --san)
+            # Whitelist SAN characters to prevent command/config injection: alphanumeric, commas, dots, colons, hyphens, underscores
+            if ! [[ "$2" =~ ^[A-Za-z0-9_.:,-]+$ ]]; then
+                echo "Error: --san contains invalid characters. Only alphanumeric, commas, dots, colons, hyphens, and underscores are allowed." >&2
+                exit 1
+            fi
             SANS="$2"
             shift 2
             ;;
@@ -155,13 +178,17 @@ echo "Generating new self-signed certificate in '$CERT_DIR'..."
 echo "  Validity: $DAYS days"
 echo "  SANs: $SANS"
 
+# Set restrictive umask (0077) before file creation to prevent private key exposure race condition
+OLD_UMASK=$(umask)
+umask 0077
+
 # Generate private key and self-signed certificate with Subject Alternative Names
 if openssl req -x509 -nodes -newkey rsa:2048 \
     -keyout "$KEY_FILE" \
     -out "$CERT_FILE" \
     -days "$DAYS" \
     -subj "/CN=localhost" \
-    -addext "subjectAltName=$SANS" >/dev/null 2>&1; then
+    -addext "subjectAltName=${SANS}" >/dev/null 2>&1; then
     :
 else
     # Fallback for older OpenSSL versions without -addext support
@@ -174,7 +201,7 @@ prompt = no
 [req_distinguished_name]
 CN = localhost
 [v3_req]
-subjectAltName = $SANS
+subjectAltName = ${SANS}
 EOF
     openssl req -x509 -nodes -newkey rsa:2048 \
         -keyout "$KEY_FILE" \
@@ -184,7 +211,9 @@ EOF
     rm -f "$OPENSSL_CONF"
 fi
 
-# Export PKCS#12 bundle with empty password for macOS Keychain / iOS Simulator trust
+# Export PKCS#12 bundle for macOS Keychain / iOS Simulator trust.
+# NOTE: Uses empty password (pass:) for zero-friction local development/simulator import.
+# Protected by filesystem mode 0600 (read/write only by owner) and strictly restricted to development.
 openssl pkcs12 -export \
     -out "$P12_FILE" \
     -inkey "$KEY_FILE" \
@@ -192,7 +221,8 @@ openssl pkcs12 -export \
     -name "Vapor Localhost Cert" \
     -passout pass: >/dev/null 2>&1
 
-# Apply restrictive file permissions
+# Restore previous umask and ensure public certificate is readable (0644)
+umask "$OLD_UMASK"
 chmod 600 "$KEY_FILE"
 chmod 600 "$P12_FILE"
 chmod 644 "$CERT_FILE"

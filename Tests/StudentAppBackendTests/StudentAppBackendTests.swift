@@ -2309,8 +2309,8 @@ struct StudentAppBackendTests {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = ["scripts/renew-dev-certs.sh", "--cert-dir", tempDir, "--days", "365", "--threshold", "30"]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
 
         try? process.run()
         process.waitUntilExit()
@@ -2320,12 +2320,80 @@ struct StudentAppBackendTests {
         let checkProcess = Process()
         checkProcess.executableURL = URL(fileURLWithPath: "/bin/bash")
         checkProcess.arguments = ["scripts/renew-dev-certs.sh", "--cert-dir", tempDir, "--check-only"]
-        checkProcess.standardOutput = Pipe()
-        checkProcess.standardError = Pipe()
+        checkProcess.standardOutput = FileHandle.nullDevice
+        checkProcess.standardError = FileHandle.nullDevice
 
         try? checkProcess.run()
         checkProcess.waitUntilExit()
         #expect(checkProcess.terminationStatus == 0)
+    }
+
+    @Test("Certificate: CLI script rejects invalid inputs, path traversal, and injection attempts")
+    func certificateCLISecurityValidation() {
+        let runScriptWithArgs: ([String]) -> Int32 = { args in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+            proc.arguments = ["scripts/renew-dev-certs.sh"] + args
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            try? proc.run()
+            proc.waitUntilExit()
+            return proc.terminationStatus
+        }
+
+        // Rejects non-integer or negative days
+        #expect(runScriptWithArgs(["--days", "abc"]) != 0)
+        #expect(runScriptWithArgs(["--days", "-10"]) != 0)
+        #expect(runScriptWithArgs(["--days", "0"]) != 0)
+
+        // Rejects negative threshold
+        #expect(runScriptWithArgs(["--threshold", "-5"]) != 0)
+        #expect(runScriptWithArgs(["--threshold", "xyz"]) != 0)
+
+        // Rejects directory traversal in cert-dir
+        #expect(runScriptWithArgs(["--cert-dir", "../sensitive"]) != 0)
+        #expect(runScriptWithArgs(["--cert-dir", "/tmp/../etc"]) != 0)
+
+        // Rejects sensitive system directories
+        #expect(runScriptWithArgs(["--cert-dir", "/etc"]) != 0)
+        #expect(runScriptWithArgs(["--cert-dir", "/dev"]) != 0)
+
+        // Rejects shell injection in --san
+        #expect(runScriptWithArgs(["--san", "DNS:localhost; rm -rf /"]) != 0)
+        #expect(runScriptWithArgs(["--san", "DNS:localhost`id`"]) != 0)
+        #expect(runScriptWithArgs(["--san", "DNS:localhost' OR 1=1--"]) != 0)
+        #expect(runScriptWithArgs(["--san", "DNS:localhost$HOME"]) != 0)
+    }
+
+    @Test("Certificate: CertificateManager rejects path traversal and invalid SAN characters")
+    func certificateManagerSecurityValidation() {
+        // Path traversal rejection
+        #expect(throws: Abort.self) {
+            try CertificateManager.renewDevelopmentCertificates(
+                certDir: "../unsafe_dir",
+                force: true,
+                environment: .development
+            )
+        }
+
+        // Sensitive system directory rejection
+        #expect(throws: Abort.self) {
+            try CertificateManager.renewDevelopmentCertificates(
+                certDir: "/etc/ssl",
+                force: true,
+                environment: .development
+            )
+        }
+
+        // Invalid SAN rejection
+        #expect(throws: Abort.self) {
+            try CertificateManager.renewDevelopmentCertificates(
+                certDir: "certs",
+                force: true,
+                sans: "DNS:localhost; echo pwned",
+                environment: .development
+            )
+        }
     }
 }
 

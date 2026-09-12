@@ -92,6 +92,9 @@ struct CertificateManager: Sendable {
             )
         }
 
+        try validateDirectoryPath(certDir)
+        try validateSANs(sans)
+
         let certFile = (certDir as NSString).appendingPathComponent("cert.pem")
         let keyFile = (certDir as NSString).appendingPathComponent("key.pem")
 
@@ -129,6 +132,7 @@ struct CertificateManager: Sendable {
                 "-addext", "subjectAltName=\(sans)"
             ])
             let p12File = (certDir as NSString).appendingPathComponent("localhost.p12")
+            // Export PKCS#12 bundle with empty password for seamless dev/simulator keychain import
             _ = runOpenSSLProcess([
                 "pkcs12", "-export",
                 "-out", p12File,
@@ -138,6 +142,7 @@ struct CertificateManager: Sendable {
                 "-passout", "pass:"
             ])
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyFile)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: p12File)
             try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: certFile)
             exitCode = certExit
         }
@@ -211,6 +216,30 @@ struct CertificateManager: Sendable {
         }
     }
 
+    // MARK: - Path and Input Validation
+
+    private static func validateDirectoryPath(_ path: String) throws {
+        guard !path.contains("..") else {
+            throw Abort(.badRequest, reason: "Invalid certificate directory: directory traversal '..' is forbidden.")
+        }
+        guard !path.contains("\0") else {
+            throw Abort(.badRequest, reason: "Invalid certificate directory: null bytes are forbidden.")
+        }
+        let sensitiveDirs = ["/", "/etc", "/dev", "/sys", "/proc", "/bin", "/usr", "/sbin"]
+        for dir in sensitiveDirs {
+            if path == dir || path.hasPrefix(dir + "/") {
+                throw Abort(.forbidden, reason: "Invalid certificate directory: targeting sensitive system directory '\(path)' is forbidden.")
+            }
+        }
+    }
+
+    private static func validateSANs(_ sans: String) throws {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:,-")
+        guard sans.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+            throw Abort(.badRequest, reason: "Invalid SANs: only alphanumeric, commas, dots, colons, hyphens, and underscores are allowed.")
+        }
+    }
+
     // MARK: - Process Execution Helpers
 
     private static func runOpenSSL(_ arguments: [String]) -> String? {
@@ -220,13 +249,13 @@ struct CertificateManager: Sendable {
 
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
 
         do {
             try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             guard process.terminationStatus == 0 else { return nil }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             return String(data: data, encoding: .utf8)
         } catch {
             return nil
@@ -241,8 +270,8 @@ struct CertificateManager: Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
 
         do {
             try process.run()
