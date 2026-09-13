@@ -1,760 +1,591 @@
-# StudentAppBackend — Linux / macOS Setup Guide
+<div align="center">
 
-Vapor-based Swift backend that exposes student authentication APIs over REST and additional student APIs over GraphQL. This guide covers **native local development** on Linux and macOS, with optional Docker-based workflows.
+![StudentAppBackend Vapor Swift Server Banner](./docs/images/vapor-swift-banner.png)
+
+# StudentAppBackend
+
+**High-performance, production-ready Vapor 4 / Swift 6 backend providing dual REST and GraphQL APIs for student identity and academic lifecycle management.**
+
+<p align="center">
+  <a href="https://github.com/rajeshm20/StudentAppBackend/actions/workflows/swift.yml"><img src="https://github.com/rajeshm20/StudentAppBackend/actions/workflows/swift.yml/badge.svg" alt="CI/CD" /></a>
+  <a href="https://swift.org"><img src="https://img.shields.io/badge/Swift-6.0-F05138.svg?logo=swift&logoColor=white" alt="Swift Version" /></a>
+  <a href="https://vapor.codes"><img src="https://img.shields.io/badge/Vapor-4.115-blue.svg?logo=vapor&logoColor=white" alt="Vapor Framework" /></a>
+  <a href="https://www.postgresql.org"><img src="https://img.shields.io/badge/PostgreSQL-16-336791.svg?logo=postgresql&logoColor=white" alt="Database" /></a>
+  <a href="https://github.com/rajeshm20/StudentAppBackend/pkgs/container/studentappbackend"><img src="https://img.shields.io/badge/GHCR-v2.0.0-blue?logo=docker&logoColor=white" alt="Docker Image" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT" /></a>
+</p>
+
+</div>
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Tech Stack](#tech-stack)
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Getting Started — Local Development](#getting-started--local-development)
+- [Environment Variables](#environment-variables)
+- [API Documentation](#api-documentation)
+  - [REST Endpoints](#rest-endpoints)
+  - [GraphQL Schema & Operations](#graphql-schema--operations)
+- [Running Tests](#running-tests)
+- [Deployment](#deployment)
+  - [Docker & GHCR](#multi-stage-production-docker-build)
+  - [Building a Standalone Linux Binary](#building-a-standalone-linux-binary)
+  - [Database Migration Runbooks](#database-migration-runbooks)
+- [Project Structure](#project-structure)
+- [Contributing](#contributing)
+- [License and Maintainers](#license-and-maintainers)
 
 ---
 
 ## Overview
 
-- **Framework:** Vapor 4
-- **Language:** Swift 6
-- **Database:** MySQL
-- **API styles:** REST and GraphQL
-- **Container registry:** GitHub Container Registry (GHCR)
+StudentAppBackend is an enterprise-grade backend service engineered in Swift 6 and Vapor 4 to power school and student identity applications across mobile (iOS) and web clients. It exposes unified REST and GraphQL APIs backed by PostgreSQL 16 via the Fluent ORM, providing identity registration, secure authentication, password recovery, and role-based access control (RBAC). Built with production resiliency in mind, the service enforces strict TLS 1.2+ security controls, fail-loudly environment validations, containerized CI/CD gating, and automated database migration pipelines.
+
+---
+
+## Architecture
+
+The following Mermaid diagram outlines the request lifecycle, illustrating how client requests traverse security middleware, routing layers, business services, and database persistence, as well as background email integration:
+
+```mermaid
+flowchart TD
+    subgraph Clients["Clients"]
+        iOS["iOS App (StudyApp)"]
+        Web["Web / Third-Party Clients"]
+        Playground["GraphiQL (GET /graphiql)"]
+    end
+
+    subgraph SecurityPipeline["Security & Gateway Middleware"]
+        SecHeaders["SecurityHeadersMiddleware<br/>(HSTS, CSP, X-Frame-Options)"]
+        CORS["CORSMiddleware<br/>(Strict Origin Validation)"]
+        RateLimit["RateLimiterMiddleware<br/>(DDoS / Brute-Force Throttling)"]
+    end
+
+    subgraph Routing["Routing Layer (routes.swift)"]
+        HealthRoutes["HealthController<br/>GET /health/live<br/>GET /health/ready"]
+        AuthRoutes["AuthController<br/>POST /auth/signup/student<br/>POST /auth/login<br/>POST /auth/forgot-password<br/>POST /auth/reset-password"]
+        StudentRoutes["StudentController<br/>GET /students/:id"]
+        GraphQLRoute["GraphQL Routes<br/>POST /graphql<br/>GET /graphiql"]
+    end
+
+    subgraph AuthLayer["Authentication & Authorization"]
+        JWTAuth["JWTAuthMiddleware<br/>(Bearer Token Validation)"]
+        RoleCheck["AuthorizationService<br/>(Role Scoping & IDOR Prevention)"]
+    end
+
+    subgraph Services["Domain Services"]
+        TokenSvc["TokenService<br/>(JWT Signing & Revocation)"]
+        StudentSvc["StudentService<br/>(Registration & Auth Logic)"]
+        EmailSvc["SendGridEmailService<br/>(Async HTTP OTP Delivery)"]
+    end
+
+    subgraph Persistence["Persistence Tier (Fluent ORM)"]
+        Fluent["Fluent Engine<br/>(FluentPostgresDriver / SQLKit)"]
+        Postgres[(PostgreSQL 16 Database)]
+        RevokedTokens[("Revoked Tokens Table")]
+        ResetTokens[("Password Reset Tokens Table")]
+    end
+
+    subgraph External["External Services"]
+        SendGrid["SendGrid REST API<br/>(v3 Mail Send)"]
+    end
+
+    iOS --> SecHeaders
+    Web --> SecHeaders
+    Playground --> SecHeaders
+
+    SecHeaders --> CORS --> RateLimit
+
+    RateLimit --> HealthRoutes
+    RateLimit --> AuthRoutes
+    RateLimit --> GraphQLRoute
+    RateLimit --> JWTAuth --> RoleCheck --> StudentRoutes
+
+    AuthRoutes --> StudentSvc
+    AuthRoutes --> TokenSvc
+    AuthRoutes --> EmailSvc
+    GraphQLRoute --> StudentSvc
+    GraphQLRoute --> TokenSvc
+    StudentRoutes --> StudentSvc
+
+    EmailSvc -.->|"AsyncHTTPClient"| SendGrid
+    TokenSvc --> Fluent
+    StudentSvc --> Fluent
+
+    Fluent --> Postgres
+    Fluent --> RevokedTokens
+    Fluent --> ResetTokens
+    HealthRoutes -.->|"SELECT 1"| Postgres
+```
+
+---
+
+## Tech Stack
+
+| Technology | Purpose | Verified Version |
+| :--- | :--- | :--- |
+| **Swift** | Core programming language | `6.0` (Noble / macOS 13+) |
+| **Vapor** | Server-side web framework and HTTP engine | `4.115.0+` |
+| **PostgreSQL** | Primary relational database engine | `16-alpine` |
+| **Fluent ORM** | Object-relational mapping abstraction | `4.9.0+` |
+| **FluentPostgresDriver** | Native asynchronous PostgreSQL driver | `2.8.0+` (NIO < 1.33.0) |
+| **FluentMySQLDriver** | Fallback driver for rollback safety net | `4.4.0+` |
+| **Graphiti / GraphQL** | Pure Swift GraphQL schema builder & execution | `1.15.0` / `2.10.0` |
+| **JWT / JWTKit** | Cryptographic token creation and HS256 signing | `4.0.0+` |
+| **AsyncHTTPClient** | High-performance asynchronous HTTP networking | `1.19.0+` |
+| **NIOSSL** | TLS 1.2+ enforcement and AEAD cipher suites | `2.65.0+` |
+| **SendGrid API** | Transactional email delivery for OTP verification | REST v3 |
+| **Docker** | Multi-stage containerization with jemalloc | `24.0+` |
+
+---
 
 ## Features
 
-- Student signup, login, and logout over REST
-- GraphQL endpoint for student queries and mutations
-- JWT-based authentication with token revocation on logout
-- Centralized validation across REST and GraphQL
-- Docker-based local development (optional)
-- Optional HTTPS support for native local runs
-- Optional reverse-proxy TLS termination with Caddy
+### REST API
+- **Canonical Student Registration**: `POST /auth/signup/student` accepts structured profiles, normalizes country codes and phone numbers (E.164), and enforces server-side role assignment (`role: student`).
+- **Legacy Signup Compatibility**: `POST /auth/signup` remains operational to support backwards compatibility with legacy client versions.
+- **Enumeration-Safe Login**: `POST /auth/login` validates credentials against bcrypt hashes and returns uniform unauthorized errors to prevent account enumeration.
+- **Session Revocation**: `POST /auth/logout` invalidates JWT tokens in real-time by persisting revoked tokens to a database blacklist.
+- **Protected Student Resources**: `GET /students/:studentID` enforces fine-grained authorization via `AuthorizationService` to strictly block Insecure Direct Object References (IDOR).
+- **Probes**: `GET /health/live` for liveness checks and `GET /health/ready` for database readiness validation (`SELECT 1`).
 
-## Server Diagram
+### GraphQL API
+- **Full-Featured GraphQL Endpoint**: `POST /graphql` provides queries and mutations matching REST parity.
+- **Role-Scoped Queries**: `students` query dynamically filters accessible records based on caller role (students only receive their own record; administrators receive all).
+- **Mutations**: Native support for `signupStudent`, legacy `signup`, `login`, and profile updates (`updateStudent`).
+- **Interactive Playground**: Embedded GraphiQL web console at `GET /graphiql` (automatically disabled in production).
 
-[![Server Runtime Diagram](docs/diagrams/server-runtime.svg)](docs/diagrams/server-runtime.puml)
+### Authentication & RBAC
+- **Cryptographic Tokens**: HMAC-SHA256 signed JSON Web Tokens with configurable expiration (`JWT_ACCESS_TTL`).
+- **Role Scoping**: Enforces granular permissions across four defined roles: `admin`, `principal`, `teacher`, and `student`.
+- **Database Blacklisting**: Instant token revocation upon logout, preventing replay attacks before JWT expiration.
 
-PlantUML source: [server-runtime.puml](docs/diagrams/server-runtime.puml)
+### Transactional Email & Password Recovery
+- **Two-Phase OTP Password Reset**: 6-digit numeric verification code dispatched via SendGrid with a 10-minute validity window.
+- **Brute-Force Safeguard**: Max 3 verification attempts per OTP; automatically marks codes as invalid upon exhaustion.
+- **Ephemeral Session Tokens**: Code verification returns an unguessable 32-byte URL-safe session token required to finalize password updates.
+- **Console Fallback**: Automatically falls back to console logging when `SENDGRID_API_KEY` is not supplied in local environments.
 
-This diagram shows the runtime flow between clients, the Vapor server, REST routes, GraphQL routes, authentication logic, and MySQL.
-
-## Project Structure
-
-- [`Sources/StudentAppBackend`](Sources/StudentAppBackend): application source
-- [`Tests/StudentAppBackendTests`](Tests/StudentAppBackendTests): test suite
-- [`docker-compose.yml`](docker-compose.yml): local source-based development
-- [`docker-compose.package.yml`](docker-compose.package.yml): packaged backend + MySQL
-- [`docker-compose.caddy.yml`](docker-compose.caddy.yml): backend behind Caddy with HTTPS termination
-
-## Code Architecture
-
-[![Code Architecture Diagram](docs/diagrams/code-architecture.svg)](docs/diagrams/code-architecture.puml)
-
-PlantUML source: [code-architecture.puml](docs/diagrams/code-architecture.puml)
-
-This diagram shows how `configure.swift`, routes, controllers, GraphQL, services, models, migrations, middleware, and tests fit together in the codebase.
+### Security Hardening
+- **Strict TLS Controls**: Minimum TLS 1.2 enforcement (configurable up to TLS 1.3) with hardened AEAD cipher suites (`ECDHE-*-GCM-*` and `CHACHA20-POLY1305`).
+- **HTTP Strict Transport Security (HSTS)**: Configurable HSTS headers with preload list validation and reverse-proxy header trust.
+- **Zero Hardcoded Secrets**: Fail-loudly startup validation ensures no production instance runs with default or placeholder database credentials or JWT keys.
 
 ---
 
-## Requirements
+## Prerequisites
 
-- macOS 13 or later (or a modern Linux distribution)
-- Swift 6 toolchain / Xcode compatible with the package
-- MySQL 8 if running outside Docker
-- Docker and Docker Compose for container-based setup (optional)
+Ensure the following tools are installed on your host machine before beginning local setup:
+
+| Prerequisite | Minimum Version | Notes |
+| :--- | :--- | :--- |
+| **Operating System** | macOS 13 (Ventura) or Linux (Ubuntu 22.04+) | Tested on Apple Silicon (arm64) and Linux (x86_64) |
+| **Swift Toolchain** | `6.0` | Included in Xcode 16+ or installed via [swift.org](https://swift.org/download/) |
+| **Docker Desktop** | `24.0+` | Required for PostgreSQL service containerization |
+| **Docker Compose** | `v2.20+` | Bundled with modern Docker Desktop installations |
 
 ---
 
-## Local Development
+## Getting Started — Local Development
 
-### Build
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/rajeshm20/StudentAppBackend.git
+cd StudentAppBackend
+```
+
+### 2. Configure Environment Variables
+
+Create your local `.env` configuration file from the provided example template:
+
+```bash
+cp .env.example .env
+```
+
+Review `.env` and adjust the variables if needed. For standard local development, the default database settings in `.env.example` map directly to the docker-compose service.
+
+### 3. Start PostgreSQL Database
+
+Launch the PostgreSQL 16 container in detached mode:
+
+```bash
+docker compose up db -d
+```
+
+Verify that the database is healthy:
+
+```bash
+docker compose ps
+```
+
+### 4. Apply Database Migrations
+
+Run Fluent migrations against your local PostgreSQL database:
+
+```bash
+swift run StudentAppBackend migrate --yes
+```
+
+> **Note:** When `AUTO_MIGRATE=true` is set in your `.env`, migrations will execute automatically on startup during local development.
+
+### 5. Build and Run the Server
+
+Compile and boot the server locally:
 
 ```bash
 swift build
+swift run StudentAppBackend serve --hostname 0.0.0.0 --port 8080
 ```
 
-### Run
+Once running, verify the service status:
 
 ```bash
-swift run
+curl http://localhost:8080/health/ready
+# Expected: {"status":"ready"}
 ```
 
-### Test
+### Alternative: Run Everything in Docker
+
+To build and run the backend and database entirely inside Docker:
 
 ```bash
-swift test
+docker compose up --build
 ```
 
-Current tests cover the REST auth flow, logout authorization behavior, logout token reuse rejection, GraphQL signup, and validation edge cases.
+Access the API at `http://localhost:8081` (mapped from container port `8080`).
 
 ---
 
-## Docker (Optional)
+## Environment Variables
 
-### Published Image
+The application strictly validates environment variables during startup and fails immediately if critical configuration is absent.
 
-The backend container is published to GitHub Container Registry through the consolidated CI/CD workflow at `.github/workflows/swift.yml`.
+### Core Configuration
 
-- Default image: `ghcr.io/rajeshm20/studentappbackend:latest`
-- Additional tags: `main`, release tags such as `v1.0.0`, and commit SHA tags
+| Variable | Required | Description | Example / Default |
+| :--- | :---: | :--- | :--- |
+| `DB_DRIVER` | No | Database driver (`postgres`, `mysql`, `sqlite`) | `postgres` |
+| `DATABASE_HOST` | **Yes** | Database server hostname | `localhost` (or `db` in Docker) |
+| `DATABASE_PORT` | No | Database port (warns if 3306 is used with postgres) | `5432` |
+| `DATABASE_NAME` | **Yes** | Target database schema name | `student_db` |
+| `DATABASE_USER` | **Yes** | Database connection username | `studentapp` |
+| `DATABASE_PASSWORD` | **Yes** | Database password (**no default in prod**) | *Secret* |
+| `DATABASE_TLS_MODE` | No | Database TLS mode (`disable`, `verifyFull`, `noVerify`) | `disable` |
+| `JWT_SECRET` | **Yes** | Secret for signing JWTs (min 32 chars in prod) | *Min 32-character secret* |
+| `JWT_ACCESS_TTL` | No | JWT access token lifetime in seconds | `3600` (1 hour) |
+| `ALLOWED_ORIGIN` | **Yes** (Prod) | Explicit CORS origin header | `http://localhost:8081` |
 
-To publish from CI:
+<details>
+<summary><strong>View Advanced & Security Environment Variables</strong></summary>
 
-```bash
-git push origin main
-```
+<br/>
 
-To publish a versioned image:
+| Variable | Required | Description | Example / Default |
+| :--- | :---: | :--- | :--- |
+| `AUTO_MIGRATE` | No | Auto-apply pending migrations on startup | `true` (dev) / `false` (prod) |
+| `ENABLE_GRAPHIQL` | No | Enable `/graphiql` playground (ignored in prod) | `true` |
+| `SENDGRID_API_KEY` | No | SendGrid API key (falls back to console email) | `SG.xxxxxxxx` |
+| `FROM_EMAIL` | No | Sender email address for transactional emails | `noreply@openedschool.com` |
+| `ENABLE_HTTPS` | No | Enable native TLS server listener | `false` |
+| `TLS_CERT` | If HTTPS | Path to PEM TLS certificate file | `certs/cert.pem` |
+| `TLS_KEY` | If HTTPS | Path to PEM TLS private key file | `certs/key.pem` |
+| `TLS_MIN_VERSION` | No | Minimum TLS protocol (`1.2`, `1.3`) | `1.2` |
+| `TLS_CIPHER_SUITES`| No | Colon-delimited OpenSSL/IANA cipher list | AEAD/PFS ciphers |
+| `AUTO_RENEW_DEV_CERTS` | No | Auto-generate self-signed certs (dev only) | `true` |
+| `HSTS_ENABLED` | No | Emit `Strict-Transport-Security` header | `false` (dev) / `true` (prod) |
+| `HSTS_MAX_AGE` | No | HSTS cache TTL in seconds | `2592000` (30 days) |
+| `HSTS_INCLUDE_SUBDOMAINS` | No | Apply HSTS to all subdomains | `false` |
+| `HSTS_PRELOAD` | No | Request inclusion in browser HSTS preload list | `false` |
+| `TRUST_PROXY_HEADERS` | No | Trust `X-Forwarded-Proto` behind reverse proxy | `true` |
 
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-The Docker publish job runs only after the test job passes.
-
-### Complete Packaged Setup
-
-The published image contains only the backend application. To run the backend together with MySQL, use [`docker-compose.package.yml`](docker-compose.package.yml):
-
-```bash
-docker compose -f docker-compose.package.yml up -d
-```
-
-This package starts:
-
-- `ghcr.io/rajeshm20/studentappbackend:latest`
-- `mysql:8`
-
-Default database-related values:
-
-- `DATABASE_USER=root`
-- `DATABASE_PASSWORD=newpassword`
-- `MYSQL_ROOT_PASSWORD=newpassword`
-- `MYSQL_ROOT_HOST=%`
-
-For local development from source, use [`docker-compose.yml`](docker-compose.yml). It provides the same runtime shape but builds the backend image from this repository.
-
-If MySQL was previously started with older credentials or host permissions, recreate the volume once:
-
-```bash
-docker compose -f docker-compose.package.yml down -v
-docker compose -f docker-compose.package.yml up -d
-```
+</details>
 
 ---
 
-## API Endpoints
+## API Documentation
 
-### REST
+### REST Endpoints
 
-Base URL for the packaged Docker setup:
+| Method | Path | Description | Authentication |
+| :--- | :--- | :--- | :---: |
+| `GET` | `/health/live` | Service liveness probe | None |
+| `GET` | `/health/ready` | Database connection readiness probe | None |
+| `POST` | `/auth/signup/student` | Register student account (canonical) | None |
+| `POST` | `/auth/signup` | Legacy student registration alias | None |
+| `POST` | `/auth/login` | Authenticate and obtain JWT access token | None |
+| `POST` | `/auth/forgot-password` | Request password reset verification code | None |
+| `POST` | `/auth/verify-reset-code` | Verify 6-digit OTP and obtain session token | None |
+| `POST` | `/auth/reset-password` | Reset password using verified session token | None |
+| `POST` | `/auth/logout` | Revoke active JWT and invalidate session | Bearer JWT |
+| `GET` | `/students/:studentID` | Retrieve student profile (IDOR protected) | Bearer JWT |
 
-```text
-http://localhost:8080
-```
+<details>
+<summary><strong>View Sample REST Request & Response Payloads</strong></summary>
 
-#### Signup
-
-```bash
-curl -X POST http://localhost:8080/auth/signup \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "SasvathRN",
-    "email": "sasvathrn@rnss.com",
-    "password": "password123"
-  }'
-```
-
-#### Login
-
-```bash
-curl -X POST http://localhost:8080/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "rajesh@example.com",
-    "password": "password123"
-  }'
-```
-
-The login response includes a JWT token that you pass to protected flows such as logout.
-
-#### Logout
-
-```bash
-curl -X POST http://localhost:8080/auth/logout \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN"
-```
-
-Expected success response:
+#### Student Signup (`POST /auth/signup/student`)
 
 ```json
+// Request
 {
-  "message": "Logout successful"
+  "firstName": "John",
+  "lastName": "Doe",
+  "email": "john.doe@example.com",
+  "password": "SecurePassword123!",
+  "confirmPassword": "SecurePassword123!",
+  "countryCode": "+1",
+  "contactNumber": "5551234567"
+}
+
+// Response (200 OK)
+{
+  "id": "c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f",
+  "name": "John Doe",
+  "email": "john.doe@example.com",
+  "role": "student",
+  "status": "active"
 }
 ```
 
-#### Logout behavior in the current implementation:
-
-- Requires a bearer token in the `Authorization` header
-- Verifies the JWT before processing the request
-- Stores the token `jti` in the revoked-token table
-- Rejects repeated logout attempts with the same token
-
-#### Example Auth Flow with Logout
-
-1. Sign up a user.
-2. Log in and capture the returned token.
-3. Call logout with that token.
-
-Example logout after login:
-
-```bash
-curl -X POST http://localhost:8080/auth/logout \
-  -H "Authorization: Bearer eyJhbGciOi..."
-```
-#### Forgot password with email OTP validation
-
-forgot password (sends OTP)
-```bash
-curl -X POST http://localhost:8080/auth/forgot-password \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "your-real-email@gmail.com"
-  }'
-```
-Expected response (success — email is registered):
+#### User Login (`POST /auth/login`)
 
 ```json
+// Request
 {
-  "success": true,
-  "message": "A verification code has been sent to your email."
+  "email": "john.doe@example.com",
+  "password": "SecurePassword123!"
+}
+
+// Response (200 OK)
+{
+  "user": {
+    "id": "c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f",
+    "name": "John Doe",
+    "email": "john.doe@example.com",
+    "role": "student",
+    "status": "active"
+  },
+  "token": {
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  },
+  "status": "ok"
 }
 ```
-Expected response (email not registered):
 
-```json
-{
-  "success": false,
-  "message": "Email not registered, please enter a registered email id."
-}
-```
-Where to find the code:
-
-If SENDGRID_API_KEY is set → check the actual inbox for your-real-email@gmail.com.
-If it's not set (falls back to ConsoleEmailService) → check your terminal/server logs where swift run is running — you'll see something like:
-  📧 [DEV EMAIL] To: your-real-email@gmail.com | Subject: Your password reset code
-  Your verification code is: 482913
-  
-#### Verify the code
-```bash
-curl -X POST http://localhost:8080/auth/verify-reset-code \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "your-real-email@gmail.com",
-    "code": "482913"
-  }'
-```
-Expected response (success):
-
-```json
-{
-  "success": true,
-  "message": "Code verified.",
-  "sessionToken": "aB3xY9k2mZ..."
-}
-```
-Copy the sessionToken from this response — you need it for step 3.
-
-Expected response (wrong/expired code):
-
-```json
-{
-  "success": false,
-  "message": "Invalid code.",
-  "sessionToken": null
-}
-```
-#### Reset the password
-```bash
-curl -X POST http://localhost:8080/auth/reset-password \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "your-real-email@gmail.com",
-    "sessionToken": "aB3xY9k2mZ...",
-    "newPassword": "NewPass123",
-    "confirmPassword": "NewPass123"
-  }'
-```
-Expected response (success):
-
-```json
-{
-  "success": true,
-  "message": "Password reset successfully"
-}
-```
-Expected error responses:
-
-```json
-// mismatched passwords
-{"error": true, "reason": "Passwords do not match"}
-```
-// too short
-```json
-{"error": true, "reason": "Password must be at least 8 characters"}
-```
-// expired/invalid/reused session token
-```json
-{"error": true, "reason": "Invalid or expired reset session"}
-```
-#### Confirm the new password actually works
-```bash
-curl -X POST http://localhost:8080/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "your-real-email@gmail.com",
-    "password": "NewPass123"
-  }'
-```
-Should return a valid JWT if the reset actually took effect.
-
-Quick edge-case tests worth running too
-
-#### Unregistered email:
-
-```bash
-curl -X POST http://localhost:8080/auth/forgot-password \
-  -H "Content-Type: application/json" \
-  -d '{"email": "not-a-real-user@nowhere.com"}'
-```
-#### Reusing an already-verified code (should fail — single-use):
-
-```bash
-# Run step 2 again with the same code after step 3 already succeeded
-curl -X POST http://localhost:8080/auth/verify-reset-code \
-  -H "Content-Type: application/json" \
-  -d '{"email": "your-real-email@gmail.com", "code": "482913"}'
-```
-#### Expect this to fail since used = true after a successful reset.
-
-#### Waiting past the 10-minute code expiry, then verifying (should fail):
-
-```bash
-curl -X POST http://localhost:8080/auth/verify-reset-code \
-  -H "Content-Type: application/json" \
-  -d '{"email": "your-real-email@gmail.com", "code": "482913"}'
-```
-Expect: "Code has expired. Please request a new one."
-
-## Current GraphQL operations:
-
-- `students`: fetch all students
-- `student(id: UUID!)`: fetch a single student
-- `signup(input: StudentGraphQLCreateInput!)`: create a student
-- `login(input: StudentGraphQLLoginInput!)`: authenticate and return a JWT
-- `updateStudent(input: StudentGraphQLUpdateInput!)`: update `dob`, `name`, and `phoneNumber`
-
-#### Signup Mutation
-
-```bash
-curl -X POST http://localhost:8080/graphql \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "mutation Signup($input: StudentGraphQLCreateInput!) { signup(input: $input) { id name email } }",
-    "variables": {
-      "input": {
-        "name": "Graph User",
-        "email": "graphql@example.com",
-        "password": "password123"
-      }
-    }
-  }'
-```
-
-#### Login Mutation
-
-```bash
-curl -X POST http://localhost:8080/graphql \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "mutation Login($input: StudentGraphQLLoginInput!) { login(input: $input) { token user { id name email } } }",
-    "variables": {
-      "input": {
-        "email": "graphql@example.com",
-        "password": "password123"
-      }
-    }
-  }'
-```
-
-#### Update Student Mutation
-
-```bash
-curl -X POST http://localhost:8080/graphql \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "mutation UpdateStudent($input: StudentGraphQLUpdateInput!) { updateStudent(input: $input) { id name phoneNumber dob } }",
-    "variables": {
-      "input": {
-        "id": "PUT-STUDENT-UUID-HERE",
-        "name": "Updated Name",
-        "phoneNumber": "+1 234 567 8900"
-      }
-    }
-  }'
-```
-
-#### Students Query
-
-```bash
-curl -X POST http://localhost:8080/graphql \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "{ students { id name email phoneNumber dob } }"
-  }'
-```
-
-Minimal students query:
-
-```bash
-curl -X POST http://localhost:8080/graphql \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "{ students { id name email } }"
-  }'
-```
+</details>
 
 ---
 
-## Validation Hardening
-
-The current backend applies validation in multiple layers so invalid data is rejected before it can silently drift into persistence.
-
-### Where Validation Runs
-
-- REST signup uses Vapor validation plus shared `ValidationUtilities.swift` checks
-- GraphQL signup reuses the same create-request validation rules
-- GraphQL `updateStudent` validates `dob`, `name`, and `phoneNumber`
-- MySQL schema constraints backstop key field lengths at the database level
-
-### Current Validation Rules
-
-#### Name
-
-- Required for signup
-- Must not be empty or whitespace-only
-- Maximum length: 100 characters
-
-#### Email
-
-- Required for signup
-- Must match email format rules
-- Maximum length: 254 characters
-- Still enforced as unique at the database level
-
-#### Password
-
-- Required for signup
-- Minimum length: 8 characters
-- Must contain at least one letter and one number
-
-#### Date of Birth
-
-- Optional
-- Must not be in the future
-- Must represent a plausible age between 5 and 120 years
-
-#### Phone Number
-
-- Optional
-- Must be 10 to 20 characters
-- May contain only digits, `+`, `-`, and spaces
-
-### Database-Level Backstop
-
-The `students` schema adds `CHECK` constraints for:
-
-- `name` length up to 100 characters
-- `email` length up to 254 characters
-- `phoneNumber` length between 10 and 20 characters when present
-
-This means malformed or oversized values are not only blocked at the API layer, but also guarded at the database layer.
-
-### Example Invalid Signup Request
-
-```bash
-curl -X POST http://localhost:8080/auth/signup \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "",
-    "email": "not-an-email",
-    "password": "short"
-  }'
-```
-
-Expected behavior:
-
-- HTTP `400 Bad Request`
-- Validation failure reason returned by the API
-- No student row created
-
-### Validation Test Coverage
-
-The current test suite includes cases for:
-
-- empty and oversized names
-- malformed and oversized emails
-- weak passwords
-- future and implausible dates of birth
-- malformed, too-short, and too-long phone numbers
-- valid payloads with optional fields present or absent
-
----
-
-## HTTPS
-
-### Native Local HTTPS
-
-If running the Vapor app directly with local HTTPS (`ENABLE_HTTPS=true`), self-signed certificates with modern Subject Alternative Names (`DNS:localhost, IP:127.0.0.1, IP:::1`) are automatically managed.
-
-#### 1. Automated Certificate Renewal Script
-
-Use [`scripts/renew-dev-certs.sh`](scripts/renew-dev-certs.sh) to inspect, generate, or renew development certificates:
-
-```bash
-# Check if certificates are healthy without modifying files
-./scripts/renew-dev-certs.sh --check-only
-
-# Generate or renew certificates (idempotent: skips if valid > 30 days)
-./scripts/renew-dev-certs.sh
-
-# Force regeneration immediately
-./scripts/renew-dev-certs.sh --force
-
-# Custom password for PKCS#12 bundle (defaults to empty password)
-./scripts/renew-dev-certs.sh --p12-pass "mypassword"
-```
-
-The script automatically generates:
-- `certs/cert.pem` (Public X.509 certificate with SAN extensions; `0644`)
-- `certs/key.pem` (2048-bit RSA private key; `0600`)
-- `certs/localhost.p12` (PKCS#12 bundle for Keychain & iOS Simulator trust; `0600`)
-
-#### 2. Automatic Startup Pre-Flight Check
-
-When `ENABLE_HTTPS=true` is set in `.development`, `CertificateManager` automatically inspects certificate expiration during server startup (`configureTLS`). If missing or expiring within 30 days (`DEV_CERT_RENEWAL_THRESHOLD_DAYS`), it automatically refreshes them (can be disabled with `AUTO_RENEW_DEV_CERTS=false`).
-
-*Note: Self-signed certificate auto-renewal is strictly forbidden in `.production`.*
-
-#### 3. Trusting the Certificate for Local Testing
-
-Import `certs/cert.pem` or `certs/localhost.p12` into macOS Keychain (or iOS Simulator) and mark it as trusted for SSL.
-
-> [!NOTE]
-> `certs/localhost.p12` defaults to an empty password (`pass:`) for frictionless local development and iOS Simulator trust store imports without password prompts. A custom password can optionally be supplied via `--p12-pass <PASSWORD>`. The bundle is restricted by `0600` permissions (owner-accessible only), gitignored, and strictly forbidden in production.
-
-Then test local HTTPS:
-
-```bash
-curl https://localhost:8080/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"rajesh@example.com","password":"password123"}'
-```
-
-### HTTPS with Caddy
-
-To run the backend behind Caddy with TLS termination, use [`docker-compose.caddy.yml`](docker-compose.caddy.yml):
-
-```bash
-docker compose -f docker-compose.caddy.yml up -d
-```
-
-This keeps the backend container on HTTP and lets Caddy manage HTTPS on port `443`.
-
-For local Caddy testing, use:
-
-```text
-https://localhost
-```
-
-### TLS Hardening & Environment Configuration
-
-The backend enforces strict TLS 1.2 minimum versioning and forward-secret AEAD cipher suites (AES-GCM, ChaCha20-Poly1305) both at the Vapor HTTPS listener level and for MySQL client connections.
-
-#### Environment Variables
-
-| Variable | Default | Allowed Values | Purpose |
-| :--- | :--- | :--- | :--- |
-| `ENABLE_HTTPS` | `false` | `true`, `false`, `1`, `0` | Enables direct HTTPS listener on the Vapor server. |
-| `TLS_CERT` | `certs/cert.pem` | File path (prefer absolute in prod) | Path to PEM-encoded TLS certificate chain. |
-| `TLS_KEY` | `certs/key.pem` | File path (prefer absolute in prod) | Path to PEM-encoded private key. |
-| `TLS_MIN_VERSION` | `1.2` | `1.2`, `1.3`, `tlsv12`, `tlsv13` | Minimum TLS version required for TLS handshakes. Insecure versions (`1.0`, `1.1`) cause startup to abort in production. |
-| `TLS_CIPHER_SUITES` | *AEAD Suite List* | Colon-separated OpenSSL string | Overrides the default hardened TLS 1.2 cipher suites if required by specific corporate proxies. |
-| `DATABASE_TLS_MODE` | `verify-full` (prod) | `verify-full`, `no-verify`, `disable` | Enforces TLS versioning and verification when connecting to the MySQL database. |
-
-#### Default Hardened Cipher Suites (TLS 1.2)
-- `ECDHE-ECDSA-AES128-GCM-SHA256`
-- `ECDHE-RSA-AES128-GCM-SHA256`
-- `ECDHE-ECDSA-AES256-GCM-SHA384`
-- `ECDHE-RSA-AES256-GCM-SHA384`
-- `ECDHE-ECDSA-CHACHA20-POLY1305`
-- `ECDHE-RSA-CHACHA20-POLY1305`
-
-*Note: In TLS 1.3 (RFC 8446), cipher suites are managed independently by the TLS engine (NIOSSL/OpenSSL).*
-
-#### Operational & Production Guidelines
-1. **Absolute Paths in Production:** While relative paths work locally (`certs/cert.pem`), containerized deployments (Docker/Kubernetes) should use absolute paths (e.g., `/etc/ssl/certs/app.crt` and `/etc/ssl/private/app.key`) mounted via Secrets.
-2. **Fail-Fast Production Validation:** When `ENVIRONMENT=production` and `ENABLE_HTTPS=true`, `AppConfig.validateProductionSecrets()` executes on startup and will fail fast if certificate files are missing or if `TLS_MIN_VERSION` is set to an insecure protocol.
-3. **OpenSSL / OS Compatibility:** Production Linux images based on Ubuntu 24.04 (`noble`) bundle OpenSSL 3.0+, which provides native hardware acceleration and full support for both AES-GCM and ChaCha20-Poly1305.
-
-### HTTP Strict Transport Security (HSTS)
-
-The backend enforces HTTP Strict Transport Security (HSTS) in compliance with **RFC 6797 §7.2** to protect against SSL-stripping and protocol downgrade attacks.
-
-#### RFC 6797 Section 7.2 Guarantees
-- **HTTPS Responses Only:** The `Strict-Transport-Security` header is injected **only** when the transport is encrypted (direct TLS or verified reverse-proxy `X-Forwarded-Proto: https` / RFC 7239 `Forwarded: proto=https`). Unencrypted HTTP responses strictly omit the header to prevent spoofing or cache poisoning by MITM adversaries.
-- **Error Response Retention:** Because `SecurityHeadersMiddleware` wraps the entire middleware pipeline (including `ErrorMiddleware`), all error responses (400, 401, 403, 404, 429, 500) over HTTPS retain HSTS and security headers.
-- **Cache Separation:** Emits `Vary: X-Forwarded-Proto` when proxy headers are trusted, preventing intermediate caches from serving HTTP-response headers to HTTPS clients or vice-versa (RFC 9111).
-
-#### Environment Variables
-
-| Variable | Default | Allowed Values | Purpose |
-| :--- | :--- | :--- | :--- |
-| `HSTS_ENABLED` | `false` (dev/test)<br>`true` (prod) | `true`, `false`, `1`, `0` | Enables or disables HSTS header emission. Gated off in dev/test by default. |
-| `HSTS_MAX_AGE` | `2592000` (30 days) | Integer >= 0 | Max-age duration in seconds. Conservative rollout default prevents prolonged lockouts. |
-| `HSTS_INCLUDE_SUBDOMAINS` | `false` | `true`, `false`, `1`, `0` | Requires explicit opt-in once all subdomains support HTTPS. |
-| `HSTS_PRELOAD` | `false` | `true`, `false`, `1`, `0` | Requires explicit opt-in, `HSTS_INCLUDE_SUBDOMAINS=true`, and `HSTS_MAX_AGE >= 31536000`. |
-| `TRUST_PROXY_HEADERS` | `true` | `true`, `false`, `1`, `0` | Whether to trust forwarding headers (`X-Forwarded-Proto`). Set `false` if exposed directly. |
-
-#### Operational Runbook & Phased Rollout Guide
-
-##### 1. Phased Rollout Schedule
-To avoid accidental domain-wide lockouts, roll out HSTS incrementally:
-- **Phase 1 (Staging & Initial Canary):** `HSTS_MAX_AGE=86400` (1 day), `HSTS_INCLUDE_SUBDOMAINS=false`, `HSTS_PRELOAD=false`. Verify health checks and API clients.
-- **Phase 2 (Production Rollout Default):** `HSTS_MAX_AGE=2592000` (30 days). Observe for one full release cycle.
-- **Phase 3 (Long-term Hardening):** `HSTS_MAX_AGE=31536000` (1 year) or `63072000` (2 years).
-- **Phase 4 (Subdomain Protection):** Set `HSTS_INCLUDE_SUBDOMAINS=true` only after completing the Subdomain Readiness Audit.
-- **Phase 5 (Preload List Submission):** Set `HSTS_PRELOAD=true`, verify `max-age >= 31536000`, and submit to [hstspreload.org](https://hstspreload.org).
-
-##### 2. Emergency Rollback / Revocation Procedure
-If a TLS certificate fails to renew, a service is moved to HTTP, or an unmigrated subdomain breaks:
-1. Immediately deploy an environment override:
-   ```bash
-   HSTS_MAX_AGE=0
-   ```
-2. Any client connecting to the service will receive `Strict-Transport-Security: max-age=0`, which instructs browsers to immediately delete their cached HSTS pin for the domain.
-3. Update edge proxies (Caddy, Nginx, CloudFront) to also emit `max-age=0` or strip the header temporarily.
-
-##### 3. Subdomain Readiness Audit Checklist
-Before setting `HSTS_INCLUDE_SUBDOMAINS=true`:
-- [ ] Audit all public DNS records (`*.openedschool.com`, internal portals, admin panels, dev/staging subdomains).
-- [ ] Confirm valid, auto-renewing TLS certificates exist for every subdomain.
-- [ ] Confirm no legacy HTTP-only services or mixed-content assets exist under the base domain.
-
-##### 4. Reverse Proxy Hardening & Anti-Spoofing
-Reverse proxies MUST strip client-supplied forwarding headers before forwarding to the backend:
-- **Caddy:**
-  ```caddyfile
-  reverse_proxy app:8080 {
-      header_up X-Forwarded-Proto https
-      header_up X-Forwarded-Host {host}
+### GraphQL Schema & Operations
+
+Access the GraphQL endpoint at `POST /graphql` or interact visually via the GraphiQL playground at `GET /graphiql`.
+
+#### 1. Student Signup Mutation
+
+```graphql
+mutation SignupStudent($input: StudentGraphQLSignupInput!) {
+  signupStudent(input: $input) {
+    id
+    name
+    email
+    role
   }
-  ```
-- **Nginx:**
-  ```nginx
-  proxy_set_header X-Forwarded-Proto $scheme;
-  proxy_set_header Host $host;
-  ```
-- **AWS ALB / CloudFront:** Configure viewer protocol policy to `redirect-to-https` and forward the verified protocol header.
-
----
-
-## MySQL Setup on macOS
-
-If you are not using Docker, install and configure MySQL locally.
-
-### Install
-
-```bash
-brew update
-brew install mysql
+}
 ```
 
-### Start
+#### 2. User Login Mutation
 
-Start MySQL as a background service:
-
-```bash
-brew services start mysql
+```graphql
+mutation Login($input: StudentGraphQLLoginInput!) {
+  login(input: $input) {
+    token
+    user {
+      id
+      name
+      email
+      role
+    }
+  }
+}
 ```
 
-Or start it manually when needed:
+#### 3. Students Query (Role-Scoped)
 
-```bash
-mysql.server start
-```
+> **Note:** Requires `Authorization: Bearer <JWT>` header. Students receive only their own record; administrators receive all records.
 
-### Secure the Installation
-
-```bash
-mysql_secure_installation
-```
-
-Recommended actions during setup:
-
-- Set a root password
-- Remove anonymous users
-- Disallow remote root login unless explicitly required
-- Remove the test database
-- Reload privilege tables
-
-### Connect
-
-```bash
-mysql -u root -p -h 127.0.0.1 -P 3306
+```graphql
+query GetStudents {
+  students {
+    id
+    name
+    email
+    role
+    phoneNumber
+    dob
+  }
+}
 ```
 
 ---
 
-## Deployment Notes
+## Running Tests
 
-- In Docker or production environments, keep the app container on HTTP.
-- Terminate TLS in Caddy, Nginx, or another reverse proxy.
-- Do not package local self-signed certificates into production images.
+The test suite is built on the Swift Testing framework (`Testing` and `VaporTesting`) and executes integration tests covering authentication, RBAC, IDOR barriers, schema validation, TLS configurations, and dev certificate lifecycles.
 
----
+Execute all tests locally:
 
-## References
+```bash
+swift test -v
+```
 
-- [Vapor Website](https://vapor.codes)
-- [Vapor Documentation](https://docs.vapor.codes)
-- [Vapor GitHub](https://github.com/vapor)
-- [Vapor Community](https://github.com/vapor-community)
-
-
-# StudentAppBackend — Setup Guide Comparison
-
-Side-by-side comparison of the **WSL + Docker** setup vs the **Linux / macOS (native)** setup.
-
-
-| | **WSL + Docker Setup Guide** | **Linux / macOS Setup Guide** |
-|---|---|---|
-| **Target environment** | Windows 11 with WSL2 (Ubuntu), everything runs via Docker | Native Linux or macOS, with Docker optional |
-| **Prerequisites** | Windows 11 + WSL2 (Ubuntu)<br>Docker installed and running<br>Git<br>Ports: MySQL `3306`, App `8081` if `8080` is taken | macOS 13+ or modern Linux<br>Swift 6 toolchain / Xcode<br>MySQL 8 (if not using Docker)<br>Docker + Compose (optional) |
-| **Clone repo** | `git clone https://github.com/rajeshm20/StudentAppBackend.git`<br>`cd StudentAppBackend`<br>`ls` (expect `Dockerfile`, `Package.swift`, `Sources/`) | Same clone step, but typically followed by native build rather than Docker build |
-| **Build the app** | `docker buildx create --use --name mybuilder`<br>`docker buildx inspect --bootstrap`<br>`docker buildx build --platform linux/amd64 -t studentappbackend:local --load .` | `swift build` |
-| **Run the app** | `docker run -p 8081:8080 studentappbackend:local` | `swift run` |
-| **Run tests** | Handled inside CI container (`swift test -v`); current coverage includes signup, login, logout, and logout token-reuse cases | `swift test`; current coverage includes signup, login, logout, and logout token-reuse cases |
-| **Database setup** | `docker compose up -d db` (MySQL runs in a container)<br>Verify: `docker ps` | Docker Compose **or** native Homebrew MySQL:<br>`brew install mysql`<br>`brew services start mysql`<br>`mysql_secure_installation` |
-| **Common issues** | **ARM64 image on AMD64** → `exec format error`, fix with `--platform linux/amd64` rebuild<br>**Port in use** → `sudo ss -tulpn \| grep :8080`, remap with `-p 8081:8080`<br>**MySQL refused** → check `docker ps`, or `docker compose up -d` | Not covered — native builds don't hit the ARM64/AMD64 container mismatch; port conflicts are OS-level (`lsof -i :8080` on macOS/Linux) |
-| **Git branch workflow** | `git checkout -b wsl_studentappbackend`<br>`git add .`<br>`git commit -m "..."`<br>`git push -u origin wsl_studentappbackend` | Not specific to platform — standard feature-branch workflow applies |
-| **Publish to GHCR (manual)** | `docker tag studentappbackend:local ghcr.io/rajeshm20/studentappbackend:wsl-v1`<br>`docker login ghcr.io -u rajeshm20`<br>`docker push ghcr.io/rajeshm20/studentappbackend:wsl-v1` | Same manual tag/login/push steps apply if building locally on macOS/Linux |
-| **Publish via CI** | `git push origin main` (latest)<br>`git tag v1.0.0 && git push origin v1.0.0` (versioned) | Identical — CI publishing is platform-agnostic |
-| **Packaged setup (app + DB)** | `docker compose -f docker-compose.package.yml up -d` | Same command, same defaults (`DATABASE_USER=root`, `DATABASE_PASSWORD=newpassword`, etc.) |
-| **HTTPS (native, no proxy)** | Not covered — WSL guide assumes Docker/HTTP only | `openssl req -x509 -newkey rsa:2048 ...` to generate self-signed cert<br>Optional `.p12` export<br>Import into macOS Keychain |
-| **HTTPS via Caddy** | `docker compose -f docker-compose.caddy.yml up -d` | Same command — identical across both guides |
-| **API endpoints (REST/GraphQL)** | Same base URL (`http://localhost:8080`), same REST auth routes `/auth/signup`, `/auth/login`, `/auth/logout`, plus `/graphql` and `/graphiql` | Identical API surface across platforms; logout requires `Authorization: Bearer <jwt>` and revokes the token by JWT ID |
-| **Deployment notes** | Keep app container on HTTP; terminate TLS at Caddy/Nginx; never ship self-signed certs in prod images | Same guidance |
-| **Unique to this guide** | ARM64/AMD64 troubleshooting, WSL-specific branch naming convention, buildx multi-platform build steps | Native `swift build/run/test` workflow, macOS Keychain cert trust steps, Homebrew MySQL install/secure/connect steps |
+### Test Suite Coverage Highlights
+- **RBAC & Privilege Escalation**: Tests verify that client-supplied role parameters are discarded during registration.
+- **IDOR Prevention**: Asserts that student tokens attempting to access foreign `studentID` records receive `403 Forbidden`.
+- **Credential Hygiene**: Validates E.164 phone formatting, password complexity limits, and email normalization.
+- **Session Revocation**: Tests verify that blacklisted tokens are immediately rejected by `JWTAuthMiddleware`.
+- **TLS & Cipher Invariants**: Asserts that insecure TLS versions (< 1.2) fail validation in production environments.
 
 ---
 
-## Quick Takeaway
+## Deployment
 
-- **Choose WSL + Docker** if you're on Windows and want a fully containerized workflow with no native Swift toolchain installed.
-- **Choose Linux/macOS native** if you're developing directly with Xcode/Swift tooling and want faster iteration (`swift run` / `swift test`) without rebuilding Docker images on every change.
-- Both guides converge on the **same auth/API surface, including logout token revocation, same GHCR publishing workflow, and same Caddy/HTTPS reverse-proxy setup** — the only real divergence is *how the binary gets built and run locally*.
+### Multi-Stage Production Docker Build
 
+The project includes an optimized multi-stage `Dockerfile` based on `swift:6.0-noble` and `ubuntu:noble`, utilizing jemalloc memory management and static linking:
+
+```bash
+# Build local container
+docker build -t studentappbackend:latest .
+
+# Run standalone container
+docker run -d \
+  -p 8080:8080 \
+  --env-file .env \
+  --name studentapp-api \
+  studentappbackend:latest
+```
+
+### GitHub Container Registry (GHCR)
+
+Published container images are automatically built, scanned, and pushed to GHCR on tagged releases and pushes to `main`:
+
+```bash
+docker pull ghcr.io/rajeshm20/studentappbackend:latest
+docker pull ghcr.io/rajeshm20/studentappbackend:v2.0.0
+```
+
+### Building a Standalone Linux Binary
+
+While containerized deployment via Docker is standard and recommended for cloud environments, you can compile a standalone native Linux ELF binary for bare-metal servers, virtual machines, or systemd daemon services.
+
+#### Option A: Native Build on a Linux Host (Ubuntu / Debian)
+
+When building directly on a Linux server or WSL:
+
+```bash
+# 1. Install jemalloc performance memory allocator
+sudo apt-get update && sudo apt-get install -y libjemalloc-dev
+
+# 2. Compile optimized release binary with statically linked Swift standard library
+swift build -c release \
+  --product StudentAppBackend \
+  --static-swift-stdlib \
+  -Xlinker -ljemalloc
+
+# 3. Binary artifact location:
+# .build/release/StudentAppBackend
+```
+
+#### Option B: Build a Linux Binary from macOS (via Docker)
+
+Because macOS compilers produce Mach-O binaries that cannot execute on Linux, use the official Swift 6 Linux container to produce a Linux ELF executable from your Mac:
+
+```bash
+# 1. Compile inside official Swift 6.0 Linux container
+docker run --rm \
+  -v "$PWD":/workspace \
+  -w /workspace \
+  swift:6.0-noble \
+  swift build -c release --product StudentAppBackend --static-swift-stdlib
+
+# 2. Alternatively, extract the optimized binary directly from the Docker build stage:
+docker build --target build -t studentapp-builder .
+docker run --rm studentapp-builder cat /staging/StudentAppBackend > ./StudentAppBackend-linux
+chmod +x ./StudentAppBackend-linux
+```
+
+> [!TIP]
+> **Runtime Prerequisites on Linux**: When deploying the raw binary without Docker, ensure the target Linux host has `libjemalloc2` and `ca-certificates` installed (`sudo apt-get install -y libjemalloc2 ca-certificates`). Pass environment variables via a local `.env` file or `EnvironmentFile=/etc/studentapp/.env` in your systemd service unit.
+
+
+### Database Migration Runbooks
+
+Production cutover and rollback procedures from MySQL to PostgreSQL 16 are located in [`scripts/migration/`](scripts/migration/):
+- [`runbook.md`](scripts/migration/runbook.md): Production cutover execution guide.
+- [`01-canonicalize.sql`](scripts/migration/01-canonicalize.sql): Source data hygiene script for MySQL.
+- [`pgloader.load`](scripts/migration/pgloader.load): pgloader ETL schema and data translation rules.
+- [`02-verification.sh`](scripts/migration/02-verification.sh): Automated post-migration row count and MD5 checksum verification.
+
+---
+
+## Project Structure
+
+```text
+StudentAppBackend/
+├── .github/
+│   └── workflows/
+│       └── swift.yml               # GitHub Actions CI/CD (Test gating & GHCR publish)
+├── certs/                          # Development TLS certificates and keys
+├── docker-compose.yml              # Local container stack (API + PostgreSQL 16)
+├── docker-compose.package.yml      # Packaged multi-container environment
+├── Dockerfile                      # Production multi-stage Docker build
+├── Package.swift                   # Swift Package Manager manifest (Swift 6.0)
+├── scripts/
+│   ├── migration/                  # PostgreSQL migration runbook & verification tools
+│   └── renew-dev-certs.sh          # Self-signed dev certificate auto-renewal utility
+├── Sources/
+│   └── StudentAppBackend/
+│       ├── entrypoint.swift        # Application entrypoint & .env bootstrap
+│       ├── Configure/              # Database setup, JWT, CORS, TLS & security middleware
+│       ├── Controllers/            # Thin REST controllers (Auth, Student, Health)
+│       ├── GraphQL/                # Graphiti schema definitions & resolvers
+│       ├── Migrations/             # Fluent database schema migrations
+│       ├── Models/                 # Fluent database entities & DTO representations
+│       ├── Routes/                 # HTTP & GraphQL routing dispatchers
+│       └── Services/               # Business logic (TokenService, StudentService, SendGrid)
+├── Specs/                          # Architectural and security specifications
+└── Tests/
+    └── StudentAppBackendTests/     # Comprehensive integration & unit test suite
+```
+
+---
+
+## Contributing
+
+Contributions are welcomed. Please follow these conventions:
+
+1. **Branching Strategy**: Branch from `main` using descriptive prefixes:
+   - `feature/short-description`
+   - `fix/short-description`
+   - `chore/short-description`
+2. **Coding Standards**: Adhere to Swift 6 strict concurrency patterns. Business logic must reside in `Services/` rather than inline controller blocks.
+3. **Testing**: Every behavioral change must include corresponding tests in `Tests/StudentAppBackendTests/`. All tests must pass cleanly before opening a pull request.
+4. **Pull Requests**: Submit PRs against `main`. Provide a concise summary of changes and reference any associated issue numbers.
+
+For detailed guidelines, please review [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+---
+
+## License and Maintainers
+
+This project is licensed under the terms of the [MIT License](LICENSE).
+
+- **Project Maintainer**: Rajesh Mani ([@rajeshm20](https://github.com/rajeshm20))
+- **Repository**: [rajeshm20/StudentAppBackend](https://github.com/rajeshm20/StudentAppBackend)
+
+> **Image Asset Note**: If visual UI screenshots or architecture mockups are added in the future, please place them in `./docs/images/` and link them using standard Markdown syntax.
