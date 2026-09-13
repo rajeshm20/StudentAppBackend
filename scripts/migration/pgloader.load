@@ -1,0 +1,18 @@
+LOAD DATABASE
+     FROM      mysql://studentapp:local-dev-db-password-not-for-prod@localhost/student_db
+     INTO postgresql://studentapp:local-dev-db-password-not-for-prod@localhost/student_db
+
+WITH include drop, create tables, create indexes, reset sequences
+
+SET maintenance_work_mem to '128MB', work_mem to '12MB'
+
+CAST type tinyint to boolean drop typemod,
+     type datetime to timestamp drop typemod,
+     type varchar to text drop typemod,
+     type char to text drop typemod
+
+MATERIALIZE VIEWS student_db
+
+-- Alter schema behavior or cast explicit columns if needed here
+-- e.g., CAST column students.id to uuid
+;

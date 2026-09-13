@@ -1717,12 +1717,17 @@ struct StudentAppBackendTests {
 
     @Test("TLS: Production validation fails if ENABLE_HTTPS=true but certificates are missing")
     func validateProductionSecretsFailsOnMissingCerts() {
+        let prevPassword = getenv("DATABASE_PASSWORD").flatMap { String(cString: $0) }
         setenv("DATABASE_PASSWORD", "secure_prod_password_123", 1)
         setenv("ENABLE_HTTPS", "true", 1)
         setenv("TLS_CERT", "non_existent_cert_path.pem", 1)
         setenv("TLS_KEY", "non_existent_key_path.pem", 1)
         defer {
-            unsetenv("DATABASE_PASSWORD")
+            if let prev = prevPassword {
+                setenv("DATABASE_PASSWORD", prev, 1)
+            } else {
+                unsetenv("DATABASE_PASSWORD")
+            }
             unsetenv("ENABLE_HTTPS")
             unsetenv("TLS_CERT")
             unsetenv("TLS_KEY")
@@ -1825,10 +1830,15 @@ struct StudentAppBackendTests {
 
     @Test("HSTS: Production validation fails if HSTS_MAX_AGE is negative")
     func validateProductionSecretsFailsOnNegativeHSTSMaxAge() {
+        let prevPassword = getenv("DATABASE_PASSWORD").flatMap { String(cString: $0) }
         setenv("DATABASE_PASSWORD", "secure_prod_password_123", 1)
         setenv("HSTS_MAX_AGE", "-500", 1)
         defer {
-            unsetenv("DATABASE_PASSWORD")
+            if let prev = prevPassword {
+                setenv("DATABASE_PASSWORD", prev, 1)
+            } else {
+                unsetenv("DATABASE_PASSWORD")
+            }
             unsetenv("HSTS_MAX_AGE")
         }
 
@@ -1839,12 +1849,17 @@ struct StudentAppBackendTests {
 
     @Test("HSTS: Production validation fails if preload is enabled without includeSubDomains")
     func validateProductionSecretsFailsOnPreloadWithoutSubdomains() {
+        let prevPassword = getenv("DATABASE_PASSWORD").flatMap { String(cString: $0) }
         setenv("DATABASE_PASSWORD", "secure_prod_password_123", 1)
         setenv("HSTS_PRELOAD", "true", 1)
         setenv("HSTS_INCLUDE_SUBDOMAINS", "false", 1)
         setenv("HSTS_MAX_AGE", "31536000", 1)
         defer {
-            unsetenv("DATABASE_PASSWORD")
+            if let prev = prevPassword {
+                setenv("DATABASE_PASSWORD", prev, 1)
+            } else {
+                unsetenv("DATABASE_PASSWORD")
+            }
             unsetenv("HSTS_PRELOAD")
             unsetenv("HSTS_INCLUDE_SUBDOMAINS")
             unsetenv("HSTS_MAX_AGE")
@@ -1857,12 +1872,17 @@ struct StudentAppBackendTests {
 
     @Test("HSTS: Production validation fails if preload is enabled with insufficient max-age")
     func validateProductionSecretsFailsOnPreloadWithLowMaxAge() {
+        let prevPassword = getenv("DATABASE_PASSWORD").flatMap { String(cString: $0) }
         setenv("DATABASE_PASSWORD", "secure_prod_password_123", 1)
         setenv("HSTS_PRELOAD", "true", 1)
         setenv("HSTS_INCLUDE_SUBDOMAINS", "true", 1)
         setenv("HSTS_MAX_AGE", "86400", 1)
         defer {
-            unsetenv("DATABASE_PASSWORD")
+            if let prev = prevPassword {
+                setenv("DATABASE_PASSWORD", prev, 1)
+            } else {
+                unsetenv("DATABASE_PASSWORD")
+            }
             unsetenv("HSTS_PRELOAD")
             unsetenv("HSTS_INCLUDE_SUBDOMAINS")
             unsetenv("HSTS_MAX_AGE")
@@ -1875,12 +1895,17 @@ struct StudentAppBackendTests {
 
     @Test("HSTS: Production validation passes with eligible preload configuration")
     func validateProductionSecretsPassesWithValidPreloadConfig() throws {
+        let prevPassword = getenv("DATABASE_PASSWORD").flatMap { String(cString: $0) }
         setenv("DATABASE_PASSWORD", "secure_prod_password_123", 1)
         setenv("HSTS_PRELOAD", "true", 1)
         setenv("HSTS_INCLUDE_SUBDOMAINS", "true", 1)
         setenv("HSTS_MAX_AGE", "31536000", 1)
         defer {
-            unsetenv("DATABASE_PASSWORD")
+            if let prev = prevPassword {
+                setenv("DATABASE_PASSWORD", prev, 1)
+            } else {
+                unsetenv("DATABASE_PASSWORD")
+            }
             unsetenv("HSTS_PRELOAD")
             unsetenv("HSTS_INCLUDE_SUBDOMAINS")
             unsetenv("HSTS_MAX_AGE")

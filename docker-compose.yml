@@ -16,12 +16,13 @@
 #
 
 volumes:
-  db_data:
+  postgres_data:
 
 x-shared_environment: &shared_environment
   LOG_LEVEL: ${LOG_LEVEL:-debug}
   DATABASE_HOST: db
-  DATABASE_PORT: 3306
+  DATABASE_PORT: 5432
+  DATABASE_DRIVER: ${DATABASE_DRIVER:-postgres}
   DATABASE_NAME: ${DATABASE_NAME:-student_db}
   DATABASE_USER: ${DOCKER_DATABASE_USER:-studentapp}
   DATABASE_PASSWORD: ${DOCKER_DATABASE_PASSWORD:-local-dev-db-password-not-for-prod}
@@ -71,24 +72,22 @@ services:
     deploy:
       replicas: 0
   db:
-    image: mysql:8
+    image: postgres:16-alpine
     restart: always
     volumes:
-      - db_data:/var/lib/mysql
+      - postgres_data:/var/lib/postgresql/data
     environment:
-      MYSQL_ROOT_PASSWORD: ${DOCKER_DATABASE_PASSWORD:-local-dev-db-password-not-for-prod}
-      MYSQL_ROOT_HOST: ${MYSQL_ROOT_HOST:-%}
-      MYSQL_DATABASE: ${DATABASE_NAME:-student_db}
-      MYSQL_USER: ${DOCKER_DATABASE_USER:-studentapp}
-      MYSQL_PASSWORD: ${DOCKER_DATABASE_PASSWORD:-local-dev-db-password-not-for-prod}
+      POSTGRES_USER: ${DOCKER_DATABASE_USER:-studentapp}
+      POSTGRES_PASSWORD: ${DOCKER_DATABASE_PASSWORD:-local-dev-db-password-not-for-prod}
+      POSTGRES_DB: ${DATABASE_NAME:-student_db}
     ports:
-      - '3306:3306'
+      - '5432:5432'
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${DOCKER_DATABASE_PASSWORD:-local-dev-db-password-not-for-prod}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DOCKER_DATABASE_USER:-studentapp} -d ${DATABASE_NAME:-student_db}"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 20s
+      start_period: 10s
   test:
     image: swift:6.0-noble
     working_dir: /app

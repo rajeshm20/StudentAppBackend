@@ -30,13 +30,22 @@ struct AddRoleStatusPhoneToStudents: AsyncMigration {
             try await sql.raw("UPDATE students SET role = 'student' WHERE role IS NULL").run()
             try await sql.raw("UPDATE students SET status = 'active' WHERE status IS NULL").run()
 
-            // Add UNIQUE index on contactNumber for MySQL only
-            // (SQLite does not support NULL-aware partial UNIQUE indexes via simple syntax)
-            let driverName = "\(type(of: database))"
-            if driverName.lowercased().contains("mysql") {
-                try? await sql.raw("""
+            // Add UNIQUE index on contactNumber for PostgreSQL and MySQL
+            // (SQLite: application-layer duplicate check in StudentService handles uniqueness)
+            let dialect = sql.dialect.name.lowercased()
+            let driverName = "\(type(of: database))".lowercased()
+            let isPostgres = dialect.contains("postgres") || dialect.contains("psql") || driverName.contains("postgres") || driverName.contains("psql")
+            let isMySQL = dialect.contains("mysql") || driverName.contains("mysql")
+
+            if isPostgres {
+                try await sql.raw("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS students_contactNumber_unique
+                    ON students ("contactNumber")
+                """).run()
+            } else if isMySQL {
+                try await sql.raw("""
                     ALTER TABLE students
-                    ADD UNIQUE INDEX students_contactNumber_unique (contactNumber)
+                    ADD UNIQUE INDEX students_contactNumber_unique (`contactNumber`)
                 """).run()
             }
             // SQLite: application-layer duplicate check in StudentService handles uniqueness
@@ -44,11 +53,17 @@ struct AddRoleStatusPhoneToStudents: AsyncMigration {
     }
 
     func revert(on database: any Database) async throws {
-        // Drop the UNIQUE index first (MySQL only)
+        // Drop the UNIQUE index first (PostgreSQL and MySQL)
         if let sql = database as? any SQLDatabase {
-            let driverName = "\(type(of: database))"
-            if driverName.lowercased().contains("mysql") {
-                try? await sql.raw("""
+            let dialect = sql.dialect.name.lowercased()
+            let driverName = "\(type(of: database))".lowercased()
+            let isPostgres = dialect.contains("postgres") || dialect.contains("psql") || driverName.contains("postgres") || driverName.contains("psql")
+            let isMySQL = dialect.contains("mysql") || driverName.contains("mysql")
+
+            if isPostgres {
+                try await sql.raw("DROP INDEX IF EXISTS students_contactNumber_unique").run()
+            } else if isMySQL {
+                try await sql.raw("""
                     ALTER TABLE students DROP INDEX students_contactNumber_unique
                 """).run()
             }

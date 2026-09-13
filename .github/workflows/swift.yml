@@ -4,49 +4,69 @@ name: CI/CD
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "feature/postgres-migration", "feature/postgres*", "postgres-trial"]
     tags: ["v*"]
   pull_request:
-    branches: ["main"]
+    branches: ["main", "feature/postgres-migration", "feature/postgres*", "postgres-trial"]
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/studentappbackend
-  JWT_SECRET: ${{ secrets.JWT_SECRET }}
 
 jobs:
   test:
-    name: Build & Test
+    name: Build & Test (${{ matrix.db }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        db: [postgres]
+    
     container:
       image: swift:6.0-noble
+      
     services:
-      mysql:
-        image: mysql:8
+      postgres:
+        image: postgres:16-alpine
         env:
-          MYSQL_ROOT_PASSWORD: newpassword
-          MYSQL_ROOT_HOST: "%"
-          MYSQL_DATABASE: student_db
+          POSTGRES_USER: studentapp
+          POSTGRES_PASSWORD: ${{ secrets.CI_DB_PASSWORD || 'ci-db-password-placeholder' }}
+          POSTGRES_DB: student_db
+        ports:
+          - 5432:5432
         options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -pnewpassword"
+          --health-cmd="pg_isready -U studentapp -d student_db"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=10
-          --health-start-period=20s
+          --health-start-period=30s
+
     env:
-      DATABASE_HOST: mysql
-      DATABASE_PORT: 3306
-      DATABASE_USER: root
-      DATABASE_PASSWORD: newpassword
+      DB_DRIVER: postgres
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: studentapp
       DATABASE_NAME: student_db
+      DATABASE_TLS_MODE: disable
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Speeds up repeat runs: only re-resolves/rebuilds deps when
-      # Package.resolved changes instead of every single run.
+      - name: Secure Environment Variables
+        run: |
+          # Inject secrets securely, with ephemeral fallbacks for untrusted PR forks
+          DB_PASS="${{ secrets.CI_DB_PASSWORD }}"
+          if [ -z "$DB_PASS" ]; then DB_PASS='ci-db-password-placeholder'; fi
+          echo "::add-mask::$DB_PASS"
+          echo "DATABASE_PASSWORD=$DB_PASS" >> $GITHUB_ENV
+          
+          JWT="${{ secrets.JWT_SECRET }}"
+          if [ -z "$JWT" ]; then JWT=$(openssl rand -base64 32); fi
+          echo "::add-mask::$JWT"
+          echo "JWT_SECRET=$JWT" >> $GITHUB_ENV
+
       - name: Cache Swift build
         uses: actions/cache@v4
         with:
@@ -61,13 +81,30 @@ jobs:
       - name: Run tests
         run: swift test -v
 
-  publish:
-    name: Build & Push Docker Image
+  docker-build:
+    name: Build Docker Image
     needs: test
-    # Only runs after tests pass, and only for pushes/tags/manual runs —
-    # never for pull requests. This is the fix for the main gap: previously
-    # this job had no dependency on the test job at all.
-    if: needs.test.result == 'success' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (Dry Run)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  docker-publish:
+    name: Publish Docker Image
+    needs: docker-build
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -106,7 +143,5 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # GitHub Actions cache backend for Docker layer caching —
-          # avoids re-downloading/recompiling unchanged layers every push.
           cache-from: type=gha
           cache-to: type=gha,mode=max
