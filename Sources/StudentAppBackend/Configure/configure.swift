@@ -263,6 +263,8 @@ public func configure(_ app: Application) throws {
     configureEmail(app)
     try configureTLS(app)
     try configureMigrations(app)
+    app.http.server.configuration.hostname = "0.0.0.0"
+    app.http.server.configuration.port = Environment.get("PORT").flatMap(Int.init) ?? 8080
     try routes(app)
 }
 

@@ -110,6 +110,10 @@ jobs:
       contents: read
       packages: write
 
+    outputs:
+      image_ref: ${{ steps.export-tag.outputs.image_ref }}
+      image_tag: ${{ steps.export-tag.outputs.image_tag }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -145,3 +149,31 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Export Pinned Image Tag
+        id: export-tag
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          TAG="sha-${SHORT_SHA}"
+          FULL_REF=$(echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}" | tr '[:upper:]' '[:lower:]')
+          echo "image_tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "image_ref=${FULL_REF}" >> $GITHUB_OUTPUT
+
+  render-deploy:
+    name: Deploy to Render
+    needs: [test, docker-publish]
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy Pinned Image to Render & Poll Status
+        run: python3 scripts/deploy-render.py
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY || vars.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ vars.RENDER_SERVICE_ID || secrets.RENDER_SERVICE_ID }}
+          IMAGE_REF: ${{ needs.docker-publish.outputs.image_ref }}
+          GITHUB_SHA: ${{ github.sha }}
+
