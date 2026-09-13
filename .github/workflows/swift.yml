@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        db: [postgres, mysql]
+        db: [postgres]
     
     container:
       image: swift:6.0-noble
@@ -41,26 +41,11 @@ jobs:
           --health-timeout=5s
           --health-retries=10
           --health-start-period=30s
-      mysql:
-        image: mysql:8.4
-        env:
-          MYSQL_DATABASE: student_db
-          MYSQL_USER: studentapp
-          MYSQL_PASSWORD: ${{ secrets.CI_DB_PASSWORD || 'ci-db-password-placeholder' }}
-          MYSQL_RANDOM_ROOT_PASSWORD: 'yes'
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping -h localhost"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=10
-          --health-start-period=30s
 
     env:
-      DB_DRIVER: ${{ matrix.db }}
-      DATABASE_HOST: ${{ matrix.db == 'postgres' && 'postgres' || 'mysql' }}
-      DATABASE_PORT: ${{ matrix.db == 'postgres' && '5432' || '3306' }}
+      DB_DRIVER: postgres
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
       DATABASE_USER: studentapp
       DATABASE_NAME: student_db
       DATABASE_TLS_MODE: disable

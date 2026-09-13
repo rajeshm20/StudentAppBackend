@@ -113,7 +113,7 @@ private func configureDatabase(_ app: Application) throws {
             database: database,
             tls: tlsConfig
         )
-        app.databases.use(.postgres(configuration: postgresConfig), as: .psql)
+        app.databases.use(.postgres(configuration: postgresConfig), as: .psql, isDefault: true)
 
     case "mysql":
         guard let host = Environment.get("DATABASE_HOST"), !host.isEmpty else {
@@ -137,7 +137,7 @@ private func configureDatabase(_ app: Application) throws {
             password: password,
             database: database,
             tlsConfiguration: databaseTLSConfiguration(for: app.environment)
-        ), as: .mysql)
+        ), as: .mysql, isDefault: true)
 
     default:
         throw Abort(.internalServerError, reason: "Unsupported DB_DRIVER: '\(driver)'. Supported values: 'postgres', 'mysql', 'sqlite'.")
