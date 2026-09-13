@@ -98,7 +98,11 @@ struct AuthController: RouteCollection {
             phoneNumber: input.phoneNumber
         )
 
-        try await student.save(on: req.db)
+        do {
+            try await student.save(on: req.db)
+        } catch {
+            throw StudentService.mapDatabaseError(error)
+        }
         return student.convertToPublic()
     }
 
@@ -129,9 +133,10 @@ struct AuthController: RouteCollection {
     func forgotPassword(_ req: Request) async throws -> ForgotPasswordResponse {
         let request = try req.content.decode(ForgotPasswordRequest.self)
         let response = ForgotPasswordResponse.forgotPasswordSubmitted
+        let normalizedEmail = request.email.lowercased().trimmingCharacters(in: .whitespaces)
 
         guard let student = try await Student.query(on: req.db)
-            .filter(\.$email == request.email)
+            .filter(\.$email == normalizedEmail)
             .first()
         else {
             return response // enumeration-safe: same response regardless
@@ -168,9 +173,10 @@ struct AuthController: RouteCollection {
 
     func verifyResetCode(_ req: Request) async throws -> VerifyResetCodeResponse {
         let request = try req.content.decode(VerifyResetCodeRequest.self)
+        let normalizedEmail = request.email.lowercased().trimmingCharacters(in: .whitespaces)
 
         guard let resetToken = try await PasswordResetToken.query(on: req.db)
-            .filter(\.$email == request.email)
+            .filter(\.$email == normalizedEmail)
             .filter(\.$used == false)
             .filter(\.$verified == false)
             .sort(\.$codeExpiresAt, .descending)
@@ -211,6 +217,7 @@ struct AuthController: RouteCollection {
 
     func resetPassword(_ req: Request) async throws -> ResetPasswordResponse {
         let request = try req.content.decode(ResetPasswordRequest.self)
+        let normalizedEmail = request.email.lowercased().trimmingCharacters(in: .whitespaces)
 
         guard request.newPassword == request.confirmPassword else {
             throw Abort(.badRequest, reason: "Passwords do not match")
@@ -220,7 +227,7 @@ struct AuthController: RouteCollection {
         }
 
         guard let resetToken = try await PasswordResetToken.query(on: req.db)
-            .filter(\.$email == request.email)
+            .filter(\.$email == normalizedEmail)
             .filter(\.$sessionToken == request.sessionToken)
             .filter(\.$verified == true)
             .filter(\.$used == false)
@@ -234,7 +241,7 @@ struct AuthController: RouteCollection {
         }
 
         guard let student = try await Student.query(on: req.db)
-            .filter(\.$email == request.email)
+            .filter(\.$email == normalizedEmail)
             .first()
         else {
             throw Abort(.notFound, reason: "Account not found")
