@@ -114,17 +114,28 @@ def write_github_summary(service_id, deploy_id, status, elapsed, image_ref, prev
     if not summary_path:
         return
 
-    icon = "✅" if success else "❌"
-    prev_id = prev_deploy.get("id", "N/A") if prev_deploy else "N/A"
-    prev_image = (
-        prev_deploy.get("image", {}).get("imageRef")
-        or prev_deploy.get("image", {}).get("url")
-        or prev_deploy.get("commit", {}).get("id")
-        or "Previous Deploy"
-    )
-    render_dashboard_url = f"https://dashboard.render.com/web/{service_id}/deploys/{deploy_id}"
+    try:
+        icon = "✅" if success else "❌"
+        prev_deploy = prev_deploy if isinstance(prev_deploy, dict) else {}
+        prev_id = prev_deploy.get("id") or "N/A"
 
-    markdown = f"""
+        prev_image_obj = prev_deploy.get("image")
+        if not isinstance(prev_image_obj, dict):
+            prev_image_obj = {}
+
+        prev_commit_obj = prev_deploy.get("commit")
+        if not isinstance(prev_commit_obj, dict):
+            prev_commit_obj = {}
+
+        prev_image = (
+            prev_image_obj.get("imageRef")
+            or prev_image_obj.get("url")
+            or prev_commit_obj.get("id")
+            or "Previous Deploy"
+        )
+        render_dashboard_url = f"https://dashboard.render.com/web/{service_id}/deploys/{deploy_id}"
+
+        markdown = f"""
 ## {icon} Render Deployment Report
 
 | Field | Value |
@@ -148,7 +159,6 @@ curl -X POST "https://api.render.com/v1/services/{service_id}/deploys" \\
   -d '{{"imageUrl": "{prev_image}"}}'
 ```
 """
-    try:
         with open(summary_path, "a", encoding="utf-8") as f:
             f.write(markdown)
     except Exception as e:
