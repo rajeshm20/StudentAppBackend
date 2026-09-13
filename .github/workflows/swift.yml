@@ -4,10 +4,10 @@ name: CI/CD
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "feature/postgres-migration", "feature/postgres*"]
     tags: ["v*"]
   pull_request:
-    branches: ["main"]
+    branches: ["main", "feature/postgres-migration", "feature/postgres*"]
   workflow_dispatch:
 
 env:
@@ -22,24 +22,28 @@ jobs:
     container:
       image: swift:6.0-noble
     services:
-      mysql:
-        image: mysql:8
+      postgres:
+        image: postgres:16-alpine
         env:
-          MYSQL_ROOT_PASSWORD: newpassword
-          MYSQL_ROOT_HOST: "%"
-          MYSQL_DATABASE: student_db
+          POSTGRES_USER: studentapp
+          POSTGRES_PASSWORD: newpassword
+          POSTGRES_DB: student_db
+        ports:
+          - 5432:5432
         options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -pnewpassword"
+          --health-cmd="pg_isready -U studentapp -d student_db"
           --health-interval=10s
           --health-timeout=5s
-          --health-retries=10
-          --health-start-period=20s
+          --health-retries=5
+          --health-start-period=10s
     env:
-      DATABASE_HOST: mysql
-      DATABASE_PORT: 3306
-      DATABASE_USER: root
+      DB_DRIVER: postgres
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: studentapp
       DATABASE_PASSWORD: newpassword
       DATABASE_NAME: student_db
+      DATABASE_TLS_MODE: disable
 
     steps:
       - name: Checkout
