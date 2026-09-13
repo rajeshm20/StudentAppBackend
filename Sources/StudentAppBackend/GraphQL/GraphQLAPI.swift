@@ -123,7 +123,7 @@ struct GraphQLResolver {
                 firstName: nil,
                 lastName: nil,
                 name: input.name,
-                email: input.email,
+                email: input.email.lowercased().trimmingCharacters(in: .whitespaces),
                 passwordHash: hashedPassword,
                 role: .student,   // always student via public signup
                 status: .active,
