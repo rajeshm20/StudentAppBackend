@@ -72,6 +72,9 @@ private func configureDatabase(_ app: Application) throws {
             throw Abort(.internalServerError, reason: "DATABASE_HOST environment variable is required")
         }
         let port = Environment.get("DATABASE_PORT").flatMap(Int.init(_:)) ?? 5432
+        if port == 3306 {
+            app.logger.warning("DATABASE_PORT is set to 3306 (MySQL default port) while DB_DRIVER is postgres! Ensure you connect to PostgreSQL on port 5432.")
+        }
         guard let user = Environment.get("DATABASE_USER"), !user.isEmpty else {
             throw Abort(.internalServerError, reason: "DATABASE_USER environment variable is required")
         }
