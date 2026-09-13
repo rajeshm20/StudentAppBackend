@@ -55,16 +55,7 @@ struct StudentService {
         do {
             try await student.save(on: db)
         } catch {
-            // Map DB unique constraint violations to application errors
-            let errorString = "\(error)"
-            if errorString.contains("Duplicate entry") || errorString.contains("UNIQUE constraint") {
-                if errorString.contains("email") {
-                    throw Abort(.conflict, reason: "An account with this email already exists", identifier: "EMAIL_ALREADY_EXISTS")
-                } else if errorString.contains("contactNumber") {
-                    throw Abort(.conflict, reason: "An account with this phone number already exists", identifier: "PHONE_NUMBER_ALREADY_EXISTS")
-                }
-            }
-            throw error
+            throw Self.mapDatabaseError(error)
         }
 
         return student
@@ -76,7 +67,38 @@ struct StudentService {
     /// Used by the backward-compatible `POST /auth/signup` alias.
     func create(student: Student, on db: any Database) async throws {
         student.passwordHash = try Bcrypt.hash(student.passwordHash)
-        try await student.save(on: db)
+        do {
+            try await student.save(on: db)
+        } catch {
+            throw Self.mapDatabaseError(error)
+        }
+    }
+
+    // MARK: - Error Mapping
+
+    /// Maps database errors (PostgreSQL PSQLError, MySQL, SQLite) to application-friendly Abort errors.
+    static func mapDatabaseError(_ error: any Error) -> any Error {
+        let errorReflection = String(reflecting: error)
+        let errorDescription = "\(error)"
+        let combined = (errorReflection + " " + errorDescription).lowercased()
+
+        let isUniqueViolation = combined.contains("23505")
+            || combined.contains("duplicate key")
+            || combined.contains("unique constraint")
+            || combined.contains("duplicate entry")
+            || combined.contains("unique_violation")
+
+        if isUniqueViolation {
+            if combined.contains("email") {
+                return Abort(.conflict, reason: "An account with this email already exists", identifier: "EMAIL_ALREADY_EXISTS")
+            } else if combined.contains("contactnumber") || combined.contains("contact_number") || combined.contains("phonenumber") || combined.contains("phone") {
+                return Abort(.conflict, reason: "An account with this phone number already exists", identifier: "PHONE_NUMBER_ALREADY_EXISTS")
+            } else {
+                return Abort(.conflict, reason: "A record with this information already exists", identifier: "RECORD_ALREADY_EXISTS")
+            }
+        }
+
+        return error
     }
 
     // MARK: - Authentication

@@ -117,13 +117,18 @@ struct GraphQLResolver {
                 throw Abort(.badRequest, reason: "Validation failed: \(errorMessages)")
             }
 
+            let normalizedEmail = input.email.lowercased().trimmingCharacters(in: .whitespaces)
+            if try await Student.query(on: request.db).filter(\.$email == normalizedEmail).first() != nil {
+                throw Abort(.conflict, reason: "An account with this email already exists", identifier: "EMAIL_ALREADY_EXISTS")
+            }
+
             let hashedPassword = try Bcrypt.hash(input.password)
             let student = Student(
                 id: UUID(),
                 firstName: nil,
                 lastName: nil,
-                name: input.name,
-                email: input.email.lowercased().trimmingCharacters(in: .whitespaces),
+                name: input.name.trimmingCharacters(in: .whitespaces),
+                email: normalizedEmail,
                 passwordHash: hashedPassword,
                 role: .student,   // always student via public signup
                 status: .active,
@@ -131,7 +136,11 @@ struct GraphQLResolver {
                 phoneNumber: input.phoneNumber
             )
 
-            try await student.save(on: request.db)
+            do {
+                try await student.save(on: request.db)
+            } catch {
+                throw StudentService.mapDatabaseError(error)
+            }
             return student.convertToPublic()
         }
     }

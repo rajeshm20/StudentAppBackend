@@ -98,7 +98,11 @@ struct AuthController: RouteCollection {
             phoneNumber: input.phoneNumber
         )
 
-        try await student.save(on: req.db)
+        do {
+            try await student.save(on: req.db)
+        } catch {
+            throw StudentService.mapDatabaseError(error)
+        }
         return student.convertToPublic()
     }
 
