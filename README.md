@@ -508,27 +508,45 @@ The current test suite includes cases for:
 
 ### Native Local HTTPS
 
-If running the Vapor app directly and you want local HTTPS, generate a self-signed certificate with `CN=localhost`.
+If running the Vapor app directly with local HTTPS (`ENABLE_HTTPS=true`), self-signed certificates with modern Subject Alternative Names (`DNS:localhost, IP:127.0.0.1, IP:::1`) are automatically managed.
 
-1. Generate the certificate and key.
+#### 1. Automated Certificate Renewal Script
 
-```bash
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout key.pem -out cert.pem -days 365 \
-  -subj "/CN=localhost"
-```
-
-2. Export a `.p12` bundle if needed.
+Use [`scripts/renew-dev-certs.sh`](scripts/renew-dev-certs.sh) to inspect, generate, or renew development certificates:
 
 ```bash
-openssl pkcs12 -export -out localhost.p12 \
-  -inkey key.pem -in cert.pem \
-  -name "Vapor Localhost Cert"
+# Check if certificates are healthy without modifying files
+./scripts/renew-dev-certs.sh --check-only
+
+# Generate or renew certificates (idempotent: skips if valid > 30 days)
+./scripts/renew-dev-certs.sh
+
+# Force regeneration immediately
+./scripts/renew-dev-certs.sh --force
+
+# Custom password for PKCS#12 bundle (defaults to empty password)
+./scripts/renew-dev-certs.sh --p12-pass "mypassword"
 ```
 
-3. Import `cert.pem` into macOS Keychain and set it to trust for local use.
-4. Restart the Vapor application so it reloads the certificates.
-5. Test the endpoint again.
+The script automatically generates:
+- `certs/cert.pem` (Public X.509 certificate with SAN extensions; `0644`)
+- `certs/key.pem` (2048-bit RSA private key; `0600`)
+- `certs/localhost.p12` (PKCS#12 bundle for Keychain & iOS Simulator trust; `0600`)
+
+#### 2. Automatic Startup Pre-Flight Check
+
+When `ENABLE_HTTPS=true` is set in `.development`, `CertificateManager` automatically inspects certificate expiration during server startup (`configureTLS`). If missing or expiring within 30 days (`DEV_CERT_RENEWAL_THRESHOLD_DAYS`), it automatically refreshes them (can be disabled with `AUTO_RENEW_DEV_CERTS=false`).
+
+*Note: Self-signed certificate auto-renewal is strictly forbidden in `.production`.*
+
+#### 3. Trusting the Certificate for Local Testing
+
+Import `certs/cert.pem` or `certs/localhost.p12` into macOS Keychain (or iOS Simulator) and mark it as trusted for SSL.
+
+> [!NOTE]
+> `certs/localhost.p12` defaults to an empty password (`pass:`) for frictionless local development and iOS Simulator trust store imports without password prompts. A custom password can optionally be supplied via `--p12-pass <PASSWORD>`. The bundle is restricted by `0600` permissions (owner-accessible only), gitignored, and strictly forbidden in production.
+
+Then test local HTTPS:
 
 ```bash
 curl https://localhost:8080/auth/login \
@@ -581,6 +599,66 @@ The backend enforces strict TLS 1.2 minimum versioning and forward-secret AEAD c
 1. **Absolute Paths in Production:** While relative paths work locally (`certs/cert.pem`), containerized deployments (Docker/Kubernetes) should use absolute paths (e.g., `/etc/ssl/certs/app.crt` and `/etc/ssl/private/app.key`) mounted via Secrets.
 2. **Fail-Fast Production Validation:** When `ENVIRONMENT=production` and `ENABLE_HTTPS=true`, `AppConfig.validateProductionSecrets()` executes on startup and will fail fast if certificate files are missing or if `TLS_MIN_VERSION` is set to an insecure protocol.
 3. **OpenSSL / OS Compatibility:** Production Linux images based on Ubuntu 24.04 (`noble`) bundle OpenSSL 3.0+, which provides native hardware acceleration and full support for both AES-GCM and ChaCha20-Poly1305.
+
+### HTTP Strict Transport Security (HSTS)
+
+The backend enforces HTTP Strict Transport Security (HSTS) in compliance with **RFC 6797 §7.2** to protect against SSL-stripping and protocol downgrade attacks.
+
+#### RFC 6797 Section 7.2 Guarantees
+- **HTTPS Responses Only:** The `Strict-Transport-Security` header is injected **only** when the transport is encrypted (direct TLS or verified reverse-proxy `X-Forwarded-Proto: https` / RFC 7239 `Forwarded: proto=https`). Unencrypted HTTP responses strictly omit the header to prevent spoofing or cache poisoning by MITM adversaries.
+- **Error Response Retention:** Because `SecurityHeadersMiddleware` wraps the entire middleware pipeline (including `ErrorMiddleware`), all error responses (400, 401, 403, 404, 429, 500) over HTTPS retain HSTS and security headers.
+- **Cache Separation:** Emits `Vary: X-Forwarded-Proto` when proxy headers are trusted, preventing intermediate caches from serving HTTP-response headers to HTTPS clients or vice-versa (RFC 9111).
+
+#### Environment Variables
+
+| Variable | Default | Allowed Values | Purpose |
+| :--- | :--- | :--- | :--- |
+| `HSTS_ENABLED` | `false` (dev/test)<br>`true` (prod) | `true`, `false`, `1`, `0` | Enables or disables HSTS header emission. Gated off in dev/test by default. |
+| `HSTS_MAX_AGE` | `2592000` (30 days) | Integer >= 0 | Max-age duration in seconds. Conservative rollout default prevents prolonged lockouts. |
+| `HSTS_INCLUDE_SUBDOMAINS` | `false` | `true`, `false`, `1`, `0` | Requires explicit opt-in once all subdomains support HTTPS. |
+| `HSTS_PRELOAD` | `false` | `true`, `false`, `1`, `0` | Requires explicit opt-in, `HSTS_INCLUDE_SUBDOMAINS=true`, and `HSTS_MAX_AGE >= 31536000`. |
+| `TRUST_PROXY_HEADERS` | `true` | `true`, `false`, `1`, `0` | Whether to trust forwarding headers (`X-Forwarded-Proto`). Set `false` if exposed directly. |
+
+#### Operational Runbook & Phased Rollout Guide
+
+##### 1. Phased Rollout Schedule
+To avoid accidental domain-wide lockouts, roll out HSTS incrementally:
+- **Phase 1 (Staging & Initial Canary):** `HSTS_MAX_AGE=86400` (1 day), `HSTS_INCLUDE_SUBDOMAINS=false`, `HSTS_PRELOAD=false`. Verify health checks and API clients.
+- **Phase 2 (Production Rollout Default):** `HSTS_MAX_AGE=2592000` (30 days). Observe for one full release cycle.
+- **Phase 3 (Long-term Hardening):** `HSTS_MAX_AGE=31536000` (1 year) or `63072000` (2 years).
+- **Phase 4 (Subdomain Protection):** Set `HSTS_INCLUDE_SUBDOMAINS=true` only after completing the Subdomain Readiness Audit.
+- **Phase 5 (Preload List Submission):** Set `HSTS_PRELOAD=true`, verify `max-age >= 31536000`, and submit to [hstspreload.org](https://hstspreload.org).
+
+##### 2. Emergency Rollback / Revocation Procedure
+If a TLS certificate fails to renew, a service is moved to HTTP, or an unmigrated subdomain breaks:
+1. Immediately deploy an environment override:
+   ```bash
+   HSTS_MAX_AGE=0
+   ```
+2. Any client connecting to the service will receive `Strict-Transport-Security: max-age=0`, which instructs browsers to immediately delete their cached HSTS pin for the domain.
+3. Update edge proxies (Caddy, Nginx, CloudFront) to also emit `max-age=0` or strip the header temporarily.
+
+##### 3. Subdomain Readiness Audit Checklist
+Before setting `HSTS_INCLUDE_SUBDOMAINS=true`:
+- [ ] Audit all public DNS records (`*.openedschool.com`, internal portals, admin panels, dev/staging subdomains).
+- [ ] Confirm valid, auto-renewing TLS certificates exist for every subdomain.
+- [ ] Confirm no legacy HTTP-only services or mixed-content assets exist under the base domain.
+
+##### 4. Reverse Proxy Hardening & Anti-Spoofing
+Reverse proxies MUST strip client-supplied forwarding headers before forwarding to the backend:
+- **Caddy:**
+  ```caddyfile
+  reverse_proxy app:8080 {
+      header_up X-Forwarded-Proto https
+      header_up X-Forwarded-Host {host}
+  }
+  ```
+- **Nginx:**
+  ```nginx
+  proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_set_header Host $host;
+  ```
+- **AWS ALB / CloudFront:** Configure viewer protocol policy to `redirect-to-https` and forward the verified protocol header.
 
 ---
 

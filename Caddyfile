@@ -4,7 +4,11 @@
         ciphers TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
     }
 
+    # Safe edge rollout default (30 days); opt-in to includeSubDomains / preload only after subdomain audit
+    header Strict-Transport-Security "max-age=2592000"
+
     reverse_proxy app:8080 {
+        # Overwrite forwarding headers to prevent client spoofing
         header_up X-Forwarded-Proto https
         header_up X-Forwarded-Host {host}
     }
