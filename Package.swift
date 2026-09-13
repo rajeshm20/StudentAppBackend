@@ -11,7 +11,9 @@ let package = Package(
         .package(url: "https://github.com/vapor/vapor.git", from: "4.115.0"),
         // 🗄 An ORM for SQL and NoSQL databases.
         .package(url: "https://github.com/vapor/fluent.git", from: "4.9.0"),
-        // 🐬 Fluent driver for MySQL.
+        // 🐘 Fluent driver for PostgreSQL.
+        .package(url: "https://github.com/vapor/fluent-postgres-driver.git", from: "2.8.0"),
+        // 🐬 Fluent driver for MySQL (kept for rollback safety net).
         .package(url: "https://github.com/vapor/fluent-mysql-driver.git", from: "4.4.0"),
         // 🪶 Fluent driver for SQLite.
         .package(url: "https://github.com/vapor/fluent-sqlite-driver.git", from: "4.0.0"),
@@ -31,6 +33,7 @@ let package = Package(
             name: "StudentAppBackend",
             dependencies: [
                 .product(name: "Fluent", package: "fluent"),
+                .product(name: "FluentPostgresDriver", package: "fluent-postgres-driver"),
                 .product(name: "FluentMySQLDriver", package: "fluent-mysql-driver"),
                 .product(name: "FluentSQLiteDriver", package: "fluent-sqlite-driver"),
                 .product(name: "Leaf", package: "leaf"),

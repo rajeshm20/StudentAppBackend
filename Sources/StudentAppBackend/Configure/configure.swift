@@ -1,5 +1,6 @@
 import Fluent
 import FluentMySQLDriver
+import FluentPostgresDriver
 import FluentSQLiteDriver
 import JWT
 import JWTKit
@@ -51,20 +52,92 @@ func databaseTLSConfiguration(for environment: Environment) -> TLSConfiguration?
     }
 }
 
-private func configureDatabase(_ app: Application) {
-    if app.environment == .testing || Environment.get("DATABASE_DRIVER")?.lowercased() == "sqlite" {
+private func configureDatabase(_ app: Application) throws {
+    let driver = (Environment.get("DB_DRIVER") ?? Environment.get("DATABASE_DRIVER") ?? "postgres").lowercased()
+
+    if (app.environment == .testing && Environment.get("DB_DRIVER") == nil && Environment.get("DATABASE_DRIVER") == nil) || driver == "sqlite" {
         app.databases.use(.sqlite(.memory), as: .sqlite, isDefault: true)
         return
     }
 
-    app.databases.use(.mysql(
-        hostname: Environment.get("DATABASE_HOST") ?? "localhost",
-        port: Environment.get("DATABASE_PORT").flatMap(Int.init(_:)) ?? MySQLConfiguration.ianaPortNumber,
-        username: Environment.get("DATABASE_USER") ?? "root",
-        password: Environment.get("DATABASE_PASSWORD") ?? "newpassword",
-        database: Environment.get("DATABASE_NAME") ?? "student_db",
-        tlsConfiguration: databaseTLSConfiguration(for: app.environment)
-    ), as: .mysql)
+    switch driver {
+    case "postgres", "psql", "postgresql":
+        if let dbURL = Environment.get("DATABASE_URL"), !dbURL.isEmpty {
+            try app.databases.use(.postgres(url: dbURL), as: .psql)
+            return
+        }
+
+        guard let host = Environment.get("DATABASE_HOST"), !host.isEmpty else {
+            throw Abort(.internalServerError, reason: "DATABASE_HOST environment variable is required")
+        }
+        let port = Environment.get("DATABASE_PORT").flatMap(Int.init(_:)) ?? 5432
+        guard let user = Environment.get("DATABASE_USER"), !user.isEmpty else {
+            throw Abort(.internalServerError, reason: "DATABASE_USER environment variable is required")
+        }
+        guard let password = Environment.get("DATABASE_PASSWORD"), !password.isEmpty else {
+            throw Abort(.internalServerError, reason: "DATABASE_PASSWORD environment variable is required")
+        }
+        guard let database = Environment.get("DATABASE_NAME"), !database.isEmpty else {
+            throw Abort(.internalServerError, reason: "DATABASE_NAME environment variable is required")
+        }
+
+        let tlsConfig: PostgresConnection.Configuration.TLS
+        switch AppConfig.databaseTLSMode(for: app.environment) {
+        case .disable:
+            tlsConfig = .disable
+        case .verifyFull:
+            if let tls = databaseTLSConfiguration(for: app.environment) {
+                let sslContext = try NIOSSLContext(configuration: tls)
+                tlsConfig = .require(sslContext)
+            } else {
+                tlsConfig = .disable
+            }
+        case .noVerify:
+            if let tls = databaseTLSConfiguration(for: app.environment) {
+                let sslContext = try NIOSSLContext(configuration: tls)
+                tlsConfig = .prefer(sslContext)
+            } else {
+                tlsConfig = .disable
+            }
+        }
+
+        let postgresConfig = SQLPostgresConfiguration(
+            hostname: host,
+            port: port,
+            username: user,
+            password: password,
+            database: database,
+            tls: tlsConfig
+        )
+        app.databases.use(.postgres(configuration: postgresConfig), as: .psql)
+
+    case "mysql":
+        guard let host = Environment.get("DATABASE_HOST"), !host.isEmpty else {
+            throw Abort(.internalServerError, reason: "DATABASE_HOST environment variable is required")
+        }
+        let port = Environment.get("DATABASE_PORT").flatMap(Int.init(_:)) ?? MySQLConfiguration.ianaPortNumber
+        guard let user = Environment.get("DATABASE_USER"), !user.isEmpty else {
+            throw Abort(.internalServerError, reason: "DATABASE_USER environment variable is required")
+        }
+        guard let password = Environment.get("DATABASE_PASSWORD"), !password.isEmpty else {
+            throw Abort(.internalServerError, reason: "DATABASE_PASSWORD environment variable is required")
+        }
+        guard let database = Environment.get("DATABASE_NAME"), !database.isEmpty else {
+            throw Abort(.internalServerError, reason: "DATABASE_NAME environment variable is required")
+        }
+
+        app.databases.use(.mysql(
+            hostname: host,
+            port: port,
+            username: user,
+            password: password,
+            database: database,
+            tlsConfiguration: databaseTLSConfiguration(for: app.environment)
+        ), as: .mysql)
+
+    default:
+        throw Abort(.internalServerError, reason: "Unsupported DB_DRIVER: '\(driver)'. Supported values: 'postgres', 'mysql', 'sqlite'.")
+    }
 }
 
 private func configureMiddleware(_ app: Application) throws {
@@ -159,7 +232,7 @@ func configureTLS(_ app: Application) throws {
 
 public func configure(_ app: Application) throws {
     try AppConfig.validateProductionSecrets(for: app.environment)
-    configureDatabase(app)
+    try configureDatabase(app)
     try configureMiddleware(app)
     try configureJWT(app)
     configureEmail(app)

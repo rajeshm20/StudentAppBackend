@@ -122,10 +122,51 @@ enum AppConfig {
         return defaultSecureCipherSuites
     }
 
+    static func validateDatabaseConfiguration(for environment: Environment) throws {
+        // Testing environment without explicit DB driver defaults to SQLite memory
+        if environment == .testing && Environment.get("DB_DRIVER") == nil && Environment.get("DATABASE_DRIVER") == nil {
+            return
+        }
+
+        let driver = (Environment.get("DB_DRIVER") ?? Environment.get("DATABASE_DRIVER") ?? "postgres").lowercased()
+        if driver == "sqlite" {
+            return
+        }
+
+        if let dbURL = Environment.get("DATABASE_URL"), !dbURL.isEmpty {
+            return
+        }
+
+        // Validate discrete DB configuration variables
+        guard let host = Environment.get("DATABASE_HOST"), !host.isEmpty else {
+            throw Abort(.internalServerError, reason: "DATABASE_HOST environment variable is required")
+        }
+
+        guard let user = Environment.get("DATABASE_USER"), !user.isEmpty else {
+            throw Abort(.internalServerError, reason: "DATABASE_USER environment variable is required")
+        }
+
+        guard let password = Environment.get("DATABASE_PASSWORD"), !password.isEmpty else {
+            throw Abort(.internalServerError, reason: "DATABASE_PASSWORD environment variable is required")
+        }
+
+        guard let database = Environment.get("DATABASE_NAME"), !database.isEmpty else {
+            throw Abort(.internalServerError, reason: "DATABASE_NAME environment variable is required")
+        }
+
+        if let portStr = Environment.get("DATABASE_PORT"), !portStr.isEmpty {
+            guard Int(portStr) != nil else {
+                throw Abort(.internalServerError, reason: "DATABASE_PORT must be a valid integer, got '\(portStr)'")
+            }
+        }
+    }
+
     static func validateProductionSecrets(for environment: Environment) throws {
         guard environment == .production else {
             return
         }
+
+        try validateDatabaseConfiguration(for: environment)
 
         if let password = Environment.get("DATABASE_PASSWORD"),
            password == "newpassword" || password == "password" {
