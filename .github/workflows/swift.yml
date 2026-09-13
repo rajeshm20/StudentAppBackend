@@ -31,7 +31,7 @@ jobs:
         image: postgres:16-alpine
         env:
           POSTGRES_USER: studentapp
-          POSTGRES_PASSWORD: ${{ secrets.CI_DB_PASSWORD || 'local-dev-db-password-not-for-prod' }}
+          POSTGRES_PASSWORD: ${{ secrets.CI_DB_PASSWORD || 'ci-db-password-placeholder' }}
           POSTGRES_DB: student_db
         ports:
           - 5432:5432
@@ -46,7 +46,7 @@ jobs:
         env:
           MYSQL_DATABASE: student_db
           MYSQL_USER: studentapp
-          MYSQL_PASSWORD: ${{ secrets.CI_DB_PASSWORD || 'local-dev-db-password-not-for-prod' }}
+          MYSQL_PASSWORD: ${{ secrets.CI_DB_PASSWORD || 'ci-db-password-placeholder' }}
           MYSQL_RANDOM_ROOT_PASSWORD: 'yes'
         ports:
           - 3306:3306
@@ -73,7 +73,7 @@ jobs:
         run: |
           # Inject secrets securely, with ephemeral fallbacks for untrusted PR forks
           DB_PASS="${{ secrets.CI_DB_PASSWORD }}"
-          if [ -z "$DB_PASS" ]; then DB_PASS=$(openssl rand -base64 16); fi
+          if [ -z "$DB_PASS" ]; then DB_PASS='ci-db-password-placeholder'; fi
           echo "::add-mask::$DB_PASS"
           echo "DATABASE_PASSWORD=$DB_PASS" >> $GITHUB_ENV
           
