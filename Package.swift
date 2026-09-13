@@ -13,6 +13,8 @@ let package = Package(
         .package(url: "https://github.com/vapor/fluent.git", from: "4.9.0"),
         // 🐘 Fluent driver for PostgreSQL.
         .package(url: "https://github.com/vapor/fluent-postgres-driver.git", from: "2.8.0"),
+        // Pin postgres-nio to < 1.33.0 for Swift 6.0 compatibility (1.33.0+ requires Swift 6.1)
+        .package(url: "https://github.com/vapor/postgres-nio.git", "1.0.0"..<"1.33.0"),
         // 🐬 Fluent driver for MySQL (kept for rollback safety net).
         .package(url: "https://github.com/vapor/fluent-mysql-driver.git", from: "4.4.0"),
         // 🪶 Fluent driver for SQLite.
