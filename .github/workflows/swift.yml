@@ -4,16 +4,16 @@ name: CI/CD
 
 on:
   push:
-    branches: ["main", "feature/postgres-migration", "feature/postgres*"]
+    branches: ["main", "feature/postgres-migration", "feature/postgres*", "postgres-trial"]
     tags: ["v*"]
   pull_request:
-    branches: ["main", "feature/postgres-migration", "feature/postgres*"]
+    branches: ["main", "feature/postgres-migration", "feature/postgres*", "postgres-trial"]
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/studentappbackend
-  JWT_SECRET: ${{ secrets.JWT_SECRET }}
+  JWT_SECRET: ${{ secrets.JWT_SECRET || 'test-jwt-secret-at-least-32-characters-long' }}
 
 jobs:
   test:
@@ -65,13 +65,9 @@ jobs:
       - name: Run tests
         run: swift test -v
 
-  publish:
-    name: Build & Push Docker Image
+  docker:
+    name: Build & Check Docker Image
     needs: test
-    # Only runs after tests pass, and only for pushes/tags/manual runs —
-    # never for pull requests. This is the fix for the main gap: previously
-    # this job had no dependency on the test job at all.
-    if: needs.test.result == 'success' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -85,6 +81,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -107,7 +104,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # GitHub Actions cache backend for Docker layer caching —
