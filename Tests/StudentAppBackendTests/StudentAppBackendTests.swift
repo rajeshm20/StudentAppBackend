@@ -708,6 +708,19 @@ struct StudentAppBackendTests {
     // MARK: - Health Endpoint Tests
     // MARK: =========================================================
 
+    @Test("Health root endpoint returns ok")
+    func testHealthRoot() async throws {
+        try await withApp { app in
+            try await app.testing().test(
+                .GET, "/",
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let body = try res.content.decode(HealthResponseTest.self)
+                    #expect(body.status == "ok")
+                })
+        }
+    }
+
     @Test("Health live endpoint returns ok")
     func testHealthLive() async throws {
         try await withApp { app in

@@ -4,6 +4,7 @@ import Vapor
 
 struct HealthController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
+        routes.get(use: live)
         routes.get("health", "live", use: live)
         routes.get("health", "ready", use: ready)
     }
