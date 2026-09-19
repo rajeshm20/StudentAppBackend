@@ -1,4 +1,4 @@
-// MARK: - AuthController.swift // Authentication endpoints: signup, login, forgot-password, logout.
+// MARK: - AuthController.swift // Authentication endpoints: signup, login, refresh, forgot-password, logout.
 // Controllers are thin — all business logic lives in services.
 // Do NOT add authorization logic here; use RoleMiddleware and AuthorizationService.
 
@@ -8,6 +8,20 @@ import JWTKit
 import JWT
 
 struct AuthController: RouteCollection {
+    private let studentService: any StudentServiceProtocol
+    private let tokenService: any TokenServiceProtocol
+    private let studentRepository: any StudentRepository
+
+    init(
+        studentService: any StudentServiceProtocol = StudentService.shared,
+        tokenService: any TokenServiceProtocol = TokenService.shared,
+        studentRepository: any StudentRepository = DatabaseStudentRepository()
+    ) {
+        self.studentService = studentService
+        self.tokenService = tokenService
+        self.studentRepository = studentRepository
+    }
+
     func boot(routes: any RoutesBuilder) throws {
         let authRoutes = routes.grouped("auth")
 
@@ -22,6 +36,7 @@ struct AuthController: RouteCollection {
 
         // MARK: - Authentication
         authRoutes.post("login", use: login)
+        authRoutes.post("refresh", use: refresh)
         authRoutes.post("forgot-password", use: forgotPassword)
         authRoutes.post("verify-reset-code", use: verifyResetCode)
         authRoutes.post("reset-password", use: resetPassword)
@@ -37,6 +52,7 @@ struct AuthController: RouteCollection {
     ///
     /// Assigns role=student server-side. Any role value provided by the client is ignored.
     /// confirmPassword is validated and then discarded — never persisted.
+    @Sendable
     func signupStudent(_ req: Request) async throws -> Student.Public {
         let input = try req.content.decode(StudentSignupRequest.self)
 
@@ -56,13 +72,14 @@ struct AuthController: RouteCollection {
             throw Abort(.badRequest, reason: "Validation failed: \(errorMessages)")
         }
 
-        let student = try await StudentService.shared.signupStudent(request: input, on: req.db)
+        let student = try await studentService.signupStudent(request: input, on: req.db)
         return student.convertToPublic()
     }
 
     // MARK: - Legacy Signup Handler
 
     /// POST /auth/signup (Backward Compatibility)
+    @Sendable
     func legacySignup(_ req: Request) async throws -> Student.Public {
         let input = try req.content.decode(Student.CreateRequest.self)
 
@@ -80,7 +97,7 @@ struct AuthController: RouteCollection {
         }
 
         let normalizedEmail = input.email.lowercased().trimmingCharacters(in: .whitespaces)
-        if try await Student.query(on: req.db).filter(\.$email == normalizedEmail).first() != nil {
+        if try await studentRepository.find(byEmail: normalizedEmail, on: req.db) != nil {
             throw Abort(.conflict, reason: "An account with this email already exists", identifier: "EMAIL_ALREADY_EXISTS")
         }
 
@@ -99,7 +116,7 @@ struct AuthController: RouteCollection {
         )
 
         do {
-            try await student.save(on: req.db)
+            try await studentRepository.create(student, on: req.db)
         } catch {
             throw StudentService.mapDatabaseError(error)
         }
@@ -110,35 +127,52 @@ struct AuthController: RouteCollection {
 
     /// POST /auth/login
     ///
-    /// Returns the authenticated user's role from the server-side record.
+    /// Returns the authenticated user's role and dual token pair.
     /// The client must NOT send a role; role is always determined from the database.
+    @Sendable
     func login(req: Request) async throws -> LoginResponse {
         let credentials = try req.content.decode(Student.LoginRequest.self)
 
-        guard let student = try await StudentService.shared.authenticate(credentials: credentials, on: req.db) else {
+        guard let student = try await studentService.authenticate(credentials: credentials, on: req.db) else {
             // Generic message: do not reveal whether email exists or account is suspended
             throw Abort(.unauthorized, reason: "Invalid email or password")
         }
 
-        let token = try TokenService.signAccessToken(for: student, on: req)
+        let tokenPair = try await tokenService.generateTokenPair(for: student, on: req)
         return LoginResponse(
             user: student.convertToPublic(),
-            token: TokenResponse(token: token),
-            status: .ok
+            token: TokenResponse(
+                token: tokenPair.accessToken,
+                refreshToken: tokenPair.refreshToken,
+                tokenType: tokenPair.tokenType,
+                expiresIn: tokenPair.expiresIn
+            ),
+            status: .ok,
+            tokens: tokenPair
         )
+    }
+
+    // MARK: - Refresh Token Rotation Handler
+
+    /// POST /auth/refresh
+    ///
+    /// Rotates the refresh token and returns a new access/refresh token pair.
+    /// If an already revoked token is provided, all sessions for the user are revoked immediately.
+    @Sendable
+    func refresh(req: Request) async throws -> TokenPairResponse {
+        let refreshRequest = try req.content.decode(RefreshRequest.self)
+        return try await tokenService.rotateRefreshToken(rawToken: refreshRequest.refreshToken, on: req)
     }
 
     // MARK: - Forgot Password Handler
 
+    @Sendable
     func forgotPassword(_ req: Request) async throws -> ForgotPasswordResponse {
         let request = try req.content.decode(ForgotPasswordRequest.self)
         let response = ForgotPasswordResponse.forgotPasswordSubmitted
         let normalizedEmail = request.email.lowercased().trimmingCharacters(in: .whitespaces)
 
-        guard let student = try await Student.query(on: req.db)
-            .filter(\.$email == normalizedEmail)
-            .first()
-        else {
+        guard let student = try await studentRepository.find(byEmail: normalizedEmail, on: req.db) else {
             return response // enumeration-safe: same response regardless
         }
 
@@ -171,6 +205,7 @@ struct AuthController: RouteCollection {
 
     // MARK: - Verify Reset Code
 
+    @Sendable
     func verifyResetCode(_ req: Request) async throws -> VerifyResetCodeResponse {
         let request = try req.content.decode(VerifyResetCodeRequest.self)
         let normalizedEmail = request.email.lowercased().trimmingCharacters(in: .whitespaces)
@@ -215,6 +250,7 @@ struct AuthController: RouteCollection {
 
     // MARK: - Reset Password
 
+    @Sendable
     func resetPassword(_ req: Request) async throws -> ResetPasswordResponse {
         let request = try req.content.decode(ResetPasswordRequest.self)
         let normalizedEmail = request.email.lowercased().trimmingCharacters(in: .whitespaces)
@@ -240,15 +276,12 @@ struct AuthController: RouteCollection {
             throw Abort(.badRequest, reason: "Reset session has expired. Please start over.")
         }
 
-        guard let student = try await Student.query(on: req.db)
-            .filter(\.$email == normalizedEmail)
-            .first()
-        else {
+        guard let student = try await studentRepository.find(byEmail: normalizedEmail, on: req.db) else {
             throw Abort(.notFound, reason: "Account not found")
         }
 
         student.passwordHash = try Bcrypt.hash(request.newPassword)
-        try await student.save(on: req.db)
+        try await studentRepository.update(student, on: req.db)
 
         resetToken.used = true
         try await resetToken.save(on: req.db)
@@ -258,6 +291,7 @@ struct AuthController: RouteCollection {
 
     // MARK: - Logout
 
+    @Sendable
     func logout(_ req: Request) async throws -> LogoutResponse {
         _ = try await TokenService.authenticateStudent(from: req)
 
@@ -266,27 +300,69 @@ struct AuthController: RouteCollection {
         }
 
         try await TokenService.revokeToken(payload, on: req.db)
+
+        if let refreshRequest = try? req.content.decode(RefreshRequest.self) {
+            try await tokenService.revokeRefreshToken(rawToken: refreshRequest.refreshToken, on: req.db)
+        }
+
         return LogoutResponse(message: "Logout successful")
     }
 }
 
 // MARK: - Response DTOs
 
-struct TokenResponse: Content {
+struct TokenResponse: Content, Sendable {
     let token: String
+    let refreshToken: String?
+    let tokenType: String?
+    let expiresIn: Int?
+
+    init(
+        token: String,
+        refreshToken: String? = nil,
+        tokenType: String? = nil,
+        expiresIn: Int? = nil
+    ) {
+        self.token = token
+        self.refreshToken = refreshToken
+        self.tokenType = tokenType
+        self.expiresIn = expiresIn
+    }
 }
 
-struct LoginResponse: Content {
+struct LoginResponse: Content, Sendable {
     let user: Student.Public
     let token: TokenResponse
     let status: HTTPStatus
+    let tokens: TokenPairResponse?
+
+    init(
+        user: Student.Public,
+        token: TokenResponse,
+        status: HTTPStatus,
+        tokens: TokenPairResponse? = nil
+    ) {
+        self.user = user
+        self.token = token
+        self.status = status
+        self.tokens = tokens
+    }
 }
 
-struct LogoutResponse: Content {
+struct LogoutResponse: Content, Sendable {
     let message: String
+
+    init(message: String) {
+        self.message = message
+    }
 }
 
-struct LoginError: Error, Codable, Content {
+struct LoginError: Error, Codable, Content, Sendable {
     let status: HTTPStatus
     let message: String
+
+    init(status: HTTPStatus, message: String) {
+        self.status = status
+        self.message = message
+    }
 }

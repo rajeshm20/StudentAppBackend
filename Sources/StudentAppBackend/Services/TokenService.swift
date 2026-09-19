@@ -3,16 +3,125 @@
 // All authentication flows go through this service.
 // Do NOT duplicate JWT parsing logic in controllers or GraphQL resolvers.
 
+import Crypto
 import Fluent
-import JWTKit
+import Foundation
 import JWT
+import JWTKit
 import Vapor
 
-enum TokenService {
-    // MARK: - Token Signing
+protocol TokenServiceProtocol: Sendable {
+    func generateTokenPair(for student: Student, on req: Request) async throws -> TokenPairResponse
+    func rotateRefreshToken(rawToken: String, on req: Request) async throws -> TokenPairResponse
+    func revokeRefreshToken(rawToken: String, on db: any Database) async throws
+}
+
+struct TokenService: TokenServiceProtocol {
+    private let refreshTokenRepository: any RefreshTokenRepository
+    private let studentRepository: any StudentRepository
+
+    init(
+        refreshTokenRepository: any RefreshTokenRepository = DatabaseRefreshTokenRepository(),
+        studentRepository: any StudentRepository = DatabaseStudentRepository()
+    ) {
+        self.refreshTokenRepository = refreshTokenRepository
+        self.studentRepository = studentRepository
+    }
+
+    static let shared = TokenService()
+
+    // MARK: - Token Pair Generation
+
+    func generateTokenPair(for student: Student, on req: Request) async throws -> TokenPairResponse {
+        let studentID = try student.requireID()
+        let expirationDelta = AppConfig.jwtAccessTTL()
+        let payload = StudentToken(
+            exp: ExpirationClaim(value: Date(timeIntervalSinceNow: expirationDelta)),
+            jti: IDClaim(value: UUID().uuidString),
+            studentID: studentID,
+            role: student.role
+        )
+        let accessToken = try req.jwt.sign(payload)
+
+        // Cryptographically secure random Refresh Token (32 bytes / 256 bits hex)
+        let rawRefreshToken = [UInt8].random(count: 32).hex
+        let tokenHash = Self.hashToken(rawRefreshToken)
+
+        // Persist hashed refresh token (valid for 30 days)
+        let refreshTokenModel = RefreshToken(
+            tokenHash: tokenHash,
+            userID: studentID,
+            expiresAt: Date().addingTimeInterval(30 * 86400),
+            isRevoked: false
+        )
+        try await refreshTokenRepository.create(refreshTokenModel, on: req.db)
+
+        return TokenPairResponse(
+            accessToken: accessToken,
+            refreshToken: rawRefreshToken,
+            tokenType: "Bearer",
+            expiresIn: Int(expirationDelta)
+        )
+    }
+
+    // MARK: - Refresh Token Rotation & Reuse Detection
+
+    func rotateRefreshToken(rawToken: String, on req: Request) async throws -> TokenPairResponse {
+        let tokenHash = Self.hashToken(rawToken)
+
+        // 1. Locate token by hash
+        guard let existingToken = try await refreshTokenRepository.find(byHash: tokenHash, on: req.db) else {
+            throw Abort(.unauthorized, reason: "Invalid refresh token.")
+        }
+
+        // 2. Reuse Detection: If an already revoked token is used, suspect token theft
+        if existingToken.isRevoked {
+            // Invalidate ALL sessions/tokens for this user immediately
+            try await refreshTokenRepository.revokeAll(forUserID: existingToken.$user.id, on: req.db)
+
+            req.logger.critical("Compromised token reuse detected for user ID: \(existingToken.$user.id). Revoked all sessions.")
+            throw Abort(.unauthorized, reason: "Invalid authentication state. Please log in again.")
+        }
+
+        // 3. Check expiration
+        guard existingToken.expiresAt > Date() else {
+            existingToken.isRevoked = true
+            try await refreshTokenRepository.update(existingToken, on: req.db)
+            throw Abort(.unauthorized, reason: "Refresh token has expired.")
+        }
+
+        // 4. Invalidate used token
+        existingToken.isRevoked = true
+        try await refreshTokenRepository.update(existingToken, on: req.db)
+
+        // 5. Fetch associated student
+        guard let student = try await studentRepository.find(byID: existingToken.$user.id, on: req.db) else {
+            throw Abort(.unauthorized, reason: "Invalid authentication state. User not found.")
+        }
+
+        guard student.status.isLoginPermitted else {
+            throw Abort(.unauthorized, reason: "Account is suspended or inactive.")
+        }
+
+        // 6. Issue fresh token pair
+        return try await generateTokenPair(for: student, on: req)
+    }
+
+    // MARK: - Refresh Token Revocation
+
+    func revokeRefreshToken(rawToken: String, on db: any Database) async throws {
+        let tokenHash = Self.hashToken(rawToken)
+        try await refreshTokenRepository.revoke(byHash: tokenHash, on: db)
+    }
+
+    static func hashToken(_ token: String) -> String {
+        let digest = SHA256.hash(data: Data(token.utf8))
+        return digest.compactMap { String(format: "%02x", $0) }.joined()
+    }
+
+    // MARK: - Legacy / Direct Helper Methods
 
     /// Signs a JWT access token for the given student/user.
-    /// The `role` is embedded from the server-side record — never from client input.
     static func signAccessToken(for student: Student, on request: Request) throws -> String {
         let expiration = ExpirationClaim(value: Date(timeIntervalSinceNow: AppConfig.jwtAccessTTL()))
         let payload = StudentToken(
@@ -23,8 +132,6 @@ enum TokenService {
         )
         return try request.jwt.sign(payload)
     }
-
-    // MARK: - Token Verification
 
     /// Verifies a JWT bearer token and checks it has not been revoked.
     static func verifyAccessToken(_ token: String, on request: Request) async throws -> StudentToken {
@@ -39,13 +146,7 @@ enum TokenService {
         return payload
     }
 
-    // MARK: - Request Authentication Context
-
     /// Resolves the authenticated student from the current request.
-    /// Uses cached storage to avoid repeated DB lookups within the same request lifecycle.
-    ///
-    /// - Important: This also populates `request.authenticatedRole` from the JWT claim,
-    ///   so role checks do NOT require an extra DB round-trip.
     static func authenticateStudent(from request: Request) async throws -> Student {
         if let student = request.authenticatedStudent {
             return student
@@ -61,7 +162,6 @@ enum TokenService {
             throw Abort(.unauthorized, reason: "Invalid token")
         }
 
-        // Cache in request storage for the duration of this request
         request.authenticatedStudent = student
         request.authenticatedToken = payload
         request.authenticatedRole = payload.role
@@ -69,8 +169,7 @@ enum TokenService {
         return student
     }
 
-    // MARK: - Token Revocation
-
+    /// Revokes an access token's JTI.
     static func revokeToken(_ payload: StudentToken, on database: any Database) async throws {
         let revokedToken = RevokedToken(jti: payload.jti.value, expiresAt: payload.exp.value)
         try await revokedToken.save(on: database)
@@ -109,5 +208,11 @@ extension Request {
     var authenticatedRole: UserRole? {
         get { storage[AuthenticatedRoleKey.self] }
         set { storage[AuthenticatedRoleKey.self] = newValue }
+    }
+}
+
+private extension Array where Element == UInt8 {
+    var hex: String {
+        self.map { String(format: "%02hhx", $0) }.joined()
     }
 }

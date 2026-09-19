@@ -7,7 +7,19 @@ import Vapor
 import Fluent
 import Crypto
 
-struct StudentService {
+protocol StudentServiceProtocol: Sendable {
+    func signupStudent(request: StudentSignupRequest, on db: any Database) async throws -> Student
+    func create(student: Student, on db: any Database) async throws
+    func authenticate(credentials: Student.LoginRequest, on db: any Database) async throws -> Student?
+}
+
+struct StudentService: StudentServiceProtocol {
+    private let studentRepository: any StudentRepository
+
+    init(studentRepository: any StudentRepository = DatabaseStudentRepository()) {
+        self.studentRepository = studentRepository
+    }
+
     static let shared = StudentService()
 
     // MARK: - New Student Signup
@@ -29,11 +41,11 @@ struct StudentService {
         let normalizedPhone = E164.normalize(countryCode: request.countryCode, contactNumber: request.contactNumber)
 
         // Application-level duplicate check (DB unique constraint is the final backstop)
-        if try await Student.query(on: db).filter(\.$email == normalizedEmail).first() != nil {
+        if try await studentRepository.find(byEmail: normalizedEmail, on: db) != nil {
             throw Abort(.conflict, reason: "An account with this email already exists", identifier: "EMAIL_ALREADY_EXISTS")
         }
 
-        if try await Student.query(on: db).filter(\.$contactNumber == normalizedPhone).first() != nil {
+        if try await studentRepository.find(byContactNumber: normalizedPhone, on: db) != nil {
             throw Abort(.conflict, reason: "An account with this phone number already exists", identifier: "PHONE_NUMBER_ALREADY_EXISTS")
         }
 
@@ -53,7 +65,7 @@ struct StudentService {
         )
 
         do {
-            try await student.save(on: db)
+            try await studentRepository.create(student, on: db)
         } catch {
             throw Self.mapDatabaseError(error)
         }
@@ -68,7 +80,7 @@ struct StudentService {
     func create(student: Student, on db: any Database) async throws {
         student.passwordHash = try Bcrypt.hash(student.passwordHash)
         do {
-            try await student.save(on: db)
+            try await studentRepository.create(student, on: db)
         } catch {
             throw Self.mapDatabaseError(error)
         }
@@ -112,10 +124,7 @@ struct StudentService {
     func authenticate(credentials: Student.LoginRequest, on db: any Database) async throws -> Student? {
         let normalizedEmail = credentials.email.lowercased().trimmingCharacters(in: .whitespaces)
 
-        guard let student = try await Student.query(on: db)
-            .filter(\.$email == normalizedEmail)
-            .first()
-        else {
+        guard let student = try await studentRepository.find(byEmail: normalizedEmail, on: db) else {
             // Return nil, not an error — prevents email enumeration
             return nil
         }

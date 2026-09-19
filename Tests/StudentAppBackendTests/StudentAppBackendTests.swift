@@ -2543,6 +2543,178 @@ struct StudentAppBackendTests {
         #expect(certText.contains("127.0.0.1"))
         #expect(certText.contains("0:0:0:0:0:0:0:1") || certText.contains("::1"))
     }
+
+    // MARK: - Refresh Token & Dual Token Rotation Tests
+
+    @Test("Login returns dual token pair (access + refresh token)")
+    func testLoginReturnsTokenPair() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "tokenpair@example.com", on: app)
+            let loginPayload = ["email": "tokenpair@example.com", "password": "secret123"]
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    #expect(!fullResponse.token.token.isEmpty)
+                    guard let tokens = fullResponse.tokens else {
+                        Issue.record("Expected tokens field in login response")
+                        return
+                    }
+                    #expect(!tokens.accessToken.isEmpty)
+                    #expect(tokens.refreshToken.count == 64)
+                    #expect(tokens.tokenType == "Bearer")
+                    #expect(tokens.expiresIn > 0)
+                }
+            )
+        }
+    }
+
+    @Test("Refresh token rotation: valid refresh token issues new pair and revokes old")
+    func testRefreshTokenRotationSuccess() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "refresh1@example.com", on: app)
+            let loginPayload = ["email": "refresh1@example.com", "password": "secret123"]
+            var initialRefreshToken = ""
+
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    initialRefreshToken = fullResponse.tokens?.refreshToken ?? ""
+                }
+            )
+            #expect(!initialRefreshToken.isEmpty)
+
+            // Perform refresh
+            var newAccessToken = ""
+            var newRefreshToken = ""
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": initialRefreshToken])
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let pair = try res.content.decode(TokenPairResponseTest.self)
+                    newAccessToken = pair.accessToken
+                    newRefreshToken = pair.refreshToken
+                    #expect(!newAccessToken.isEmpty)
+                    #expect(!newRefreshToken.isEmpty)
+                    #expect(newRefreshToken != initialRefreshToken)
+                }
+            )
+
+            // Verify the new access token is valid
+            try await app.testing().test(
+                .GET, "students/\(UUID().uuidString)",
+                beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: newAccessToken)
+                },
+                afterResponse: { res async in
+                    // Should pass auth and return 404/403 based on UUID, not 401
+                    #expect(res.status != .unauthorized)
+                }
+            )
+        }
+    }
+
+    @Test("Refresh token reuse detection: replaying revoked token revokes entire token family")
+    func testRefreshTokenReuseDetection() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "reuse@example.com", on: app)
+            let loginPayload = ["email": "reuse@example.com", "password": "secret123"]
+            var token1 = ""
+
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    token1 = fullResponse.tokens?.refreshToken ?? ""
+                }
+            )
+
+            // Step 1: Rotate token1 -> token2
+            var token2 = ""
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": token1])
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let pair = try res.content.decode(TokenPairResponseTest.self)
+                    token2 = pair.refreshToken
+                }
+            )
+            #expect(!token2.isEmpty)
+
+            // Step 2: Attacker replays token1 (already used/revoked)
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": token1])
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .unauthorized)
+                }
+            )
+
+            // Step 3: Legitimate user tries to use token2 — must now ALSO be rejected
+            // because reuse detection revoked all active sessions for this user
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": token2])
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .unauthorized)
+                }
+            )
+        }
+    }
+
+    @Test("Refresh token: invalid token returns 401 unauthorized")
+    func testInvalidRefreshToken() async throws {
+        try await withApp { app in
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": "deadbeef-nonexistent-token"])
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .unauthorized)
+                }
+            )
+        }
+    }
+
+    @Test("Enterprise Unified Error: 401 returns standardized error envelope")
+    func testUnifiedErrorEnvelope() async throws {
+        try await withApp { app in
+            try await app.testing().test(
+                .GET, "students/11111111-1111-1111-1111-111111111111",
+                afterResponse: { res async throws in
+                    #expect(res.status == .unauthorized)
+                    let errorEnvelope = try res.content.decode(UnifiedErrorResponseTest.self)
+                    #expect(errorEnvelope.error.code == "UNAUTHORIZED")
+                    #expect(!errorEnvelope.error.message.isEmpty)
+                    #expect(!errorEnvelope.error.timestamp.isEmpty)
+                }
+            )
+        }
+    }
 }
 
 // MARK: - Test Request/Response Types
@@ -2701,4 +2873,28 @@ struct ResetPasswordPayload: Content {
     let sessionToken: String
     let newPassword: String
     let confirmPassword: String
+}
+
+// MARK: - Dual Token & Unified Error Response Test Types
+
+struct FullLoginResponseTest: Content {
+    var user: StudentPublicResponse
+    var token: TokenResponseTest
+    var tokens: TokenPairResponseTest?
+}
+
+struct TokenPairResponseTest: Content {
+    var accessToken: String
+    var refreshToken: String
+    var tokenType: String
+    var expiresIn: Int
+}
+
+struct UnifiedErrorResponseTest: Content {
+    struct ErrorDetail: Content {
+        let code: String
+        let message: String
+        let timestamp: String
+    }
+    let error: ErrorDetail
 }
