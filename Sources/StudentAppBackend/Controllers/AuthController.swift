@@ -293,17 +293,19 @@ struct AuthController: RouteCollection {
 
     @Sendable
     func logout(_ req: Request) async throws -> LogoutResponse {
-        _ = try await TokenService.authenticateStudent(from: req)
+        let student = try await TokenService.authenticateStudent(from: req)
 
         guard let payload = req.authenticatedToken else {
             throw Abort(.unauthorized, reason: "Missing or invalid Authorization header")
         }
 
+        let studentID = try student.requireID()
+
+        // 1. Revoke the active JWT access token
         try await TokenService.revokeToken(payload, on: req.db)
 
-        if let refreshRequest = try? req.content.decode(RefreshRequest.self) {
-            try await tokenService.revokeRefreshToken(rawToken: refreshRequest.refreshToken, on: req.db)
-        }
+        // 2. Revoke all active refresh tokens for this user identity
+        try await tokenService.revokeAllSessions(for: studentID, on: req.db)
 
         return LogoutResponse(message: "Logout successful")
     }

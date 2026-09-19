@@ -2700,6 +2700,197 @@ struct StudentAppBackendTests {
         }
     }
 
+    @Test("Logout without refresh-token body revokes all refresh tokens for authenticated student")
+    func testLogoutRevokesRefreshTokensWithoutBody() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "logouttest@example.com", on: app)
+            let loginPayload = ["email": "logouttest@example.com", "password": "secret123"]
+            var accessToken = ""
+            var refreshToken = ""
+
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    accessToken = fullResponse.token.token
+                    refreshToken = fullResponse.tokens?.refreshToken ?? ""
+                }
+            )
+            #expect(!accessToken.isEmpty)
+            #expect(!refreshToken.isEmpty)
+
+            // Logout with ONLY the Bearer token (no request body)
+            try await app.testing().test(
+                .POST, "auth/logout",
+                beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: accessToken)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                }
+            )
+
+            // Refresh token should now be rejected because all sessions were revoked
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": refreshToken])
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .unauthorized)
+                }
+            )
+        }
+    }
+
+    @Test("Refreshing the same token twice yields exactly one success and one unauthorized")
+    func testDoubleRefreshYieldsOneSuccessOneFailure() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "doublerefresh@example.com", on: app)
+            let loginPayload = ["email": "doublerefresh@example.com", "password": "secret123"]
+            var refreshToken = ""
+
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    refreshToken = fullResponse.tokens?.refreshToken ?? ""
+                }
+            )
+            #expect(!refreshToken.isEmpty)
+
+            // First refresh: Must succeed (200 OK)
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": refreshToken])
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                }
+            )
+
+            // Second refresh with the same token: Must fail (401 Unauthorized)
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": refreshToken])
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .unauthorized)
+                }
+            )
+        }
+    }
+
+    @Test("Concurrent refresh requests with the same token result in only one successful rotation")
+    func testConcurrentRefreshRequests() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "concurrent@example.com", on: app)
+            let loginPayload = ["email": "concurrent@example.com", "password": "secret123"]
+            var refreshToken = ""
+
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    refreshToken = fullResponse.tokens?.refreshToken ?? ""
+                }
+            )
+            #expect(!refreshToken.isEmpty)
+            let tokenToRefresh = refreshToken
+
+            // Execute two concurrent refresh calls for the same token
+            async let req1: HTTPStatus = {
+                var status: HTTPStatus = .internalServerError
+                try await app.testing().test(
+                    .POST, "auth/refresh",
+                    beforeRequest: { req in
+                        try req.content.encode(["refreshToken": tokenToRefresh])
+                    },
+                    afterResponse: { res async in
+                        status = res.status
+                    }
+                )
+                return status
+            }()
+
+            async let req2: HTTPStatus = {
+                var status: HTTPStatus = .internalServerError
+                try await app.testing().test(
+                    .POST, "auth/refresh",
+                    beforeRequest: { req in
+                        try req.content.encode(["refreshToken": tokenToRefresh])
+                    },
+                    afterResponse: { res async in
+                        status = res.status
+                    }
+                )
+                return status
+            }()
+
+            let statuses = try await [req1, req2]
+            let okCount = statuses.filter { $0 == .ok }.count
+            let unauthorizedCount = statuses.filter { $0 == .unauthorized }.count
+
+            // Exactly one should succeed and one should fail
+            #expect(okCount == 1)
+            #expect(unauthorizedCount == 1)
+        }
+    }
+
+    @Test("Refresh token expiry matches configured JWT_REFRESH_TTL")
+    func testRefreshTokenExpiryMatchesConfiguredTTL() async throws {
+        // Set configured TTL to 3600 seconds (1 hour)
+        setenv("JWT_REFRESH_TTL", "3600", 1)
+        defer { unsetenv("JWT_REFRESH_TTL") }
+
+        try await withApp { app in
+            _ = try await registerStudent(email: "expirytest@example.com", on: app)
+            let loginPayload = ["email": "expirytest@example.com", "password": "secret123"]
+            var rawRefreshToken = ""
+
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    rawRefreshToken = fullResponse.tokens?.refreshToken ?? ""
+                }
+            )
+            #expect(!rawRefreshToken.isEmpty)
+
+            let tokenHash = TokenService.hashToken(rawRefreshToken)
+            guard let storedToken = try await RefreshToken.query(on: app.db)
+                .filter(\.$tokenHash == tokenHash)
+                .first()
+            else {
+                Issue.record("Expected to find stored refresh token in database")
+                return
+            }
+
+            // Expiry should be approximately now + 3600s, definitely not 30 days (2592000s)
+            let expectedExpiry = Date().addingTimeInterval(3600)
+            let diff = abs(storedToken.expiresAt.timeIntervalSince(expectedExpiry))
+            #expect(diff < 10) // within 10 seconds tolerance
+        }
+    }
+
     @Test("Enterprise Unified Error: 401 returns standardized error envelope")
     func testUnifiedErrorEnvelope() async throws {
         try await withApp { app in

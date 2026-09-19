@@ -12,8 +12,10 @@ import Vapor
 
 protocol TokenServiceProtocol: Sendable {
     func generateTokenPair(for student: Student, on req: Request) async throws -> TokenPairResponse
+    func generateTokenPair(for student: Student, on req: Request, db: any Database) async throws -> TokenPairResponse
     func rotateRefreshToken(rawToken: String, on req: Request) async throws -> TokenPairResponse
     func revokeRefreshToken(rawToken: String, on db: any Database) async throws
+    func revokeAllSessions(for studentID: UUID, on db: any Database) async throws
 }
 
 struct TokenService: TokenServiceProtocol {
@@ -33,6 +35,10 @@ struct TokenService: TokenServiceProtocol {
     // MARK: - Token Pair Generation
 
     func generateTokenPair(for student: Student, on req: Request) async throws -> TokenPairResponse {
+        try await generateTokenPair(for: student, on: req, db: req.db)
+    }
+
+    func generateTokenPair(for student: Student, on req: Request, db: any Database) async throws -> TokenPairResponse {
         let studentID = try student.requireID()
         let expirationDelta = AppConfig.jwtAccessTTL()
         let payload = StudentToken(
@@ -47,14 +53,15 @@ struct TokenService: TokenServiceProtocol {
         let rawRefreshToken = [UInt8].random(count: 32).hex
         let tokenHash = Self.hashToken(rawRefreshToken)
 
-        // Persist hashed refresh token (valid for 30 days)
+        // Persist hashed refresh token using configured TTL (defaults to 7 days)
+        let refreshTTL = AppConfig.jwtRefreshTTL()
         let refreshTokenModel = RefreshToken(
             tokenHash: tokenHash,
             userID: studentID,
-            expiresAt: Date().addingTimeInterval(30 * 86400),
+            expiresAt: Date().addingTimeInterval(refreshTTL),
             isRevoked: false
         )
-        try await refreshTokenRepository.create(refreshTokenModel, on: req.db)
+        try await refreshTokenRepository.create(refreshTokenModel, on: db)
 
         return TokenPairResponse(
             accessToken: accessToken,
@@ -66,45 +73,61 @@ struct TokenService: TokenServiceProtocol {
 
     // MARK: - Refresh Token Rotation & Reuse Detection
 
+    private struct TokenReuseError: Error {
+        let userID: UUID
+    }
+
     func rotateRefreshToken(rawToken: String, on req: Request) async throws -> TokenPairResponse {
         let tokenHash = Self.hashToken(rawToken)
 
-        // 1. Locate token by hash
-        guard let existingToken = try await refreshTokenRepository.find(byHash: tokenHash, on: req.db) else {
-            throw Abort(.unauthorized, reason: "Invalid refresh token.")
-        }
+        do {
+            return try await req.db.transaction { db in
+                // 1. Locate token by hash within the transaction
+                guard let existingToken = try await refreshTokenRepository.find(byHash: tokenHash, on: db) else {
+                    throw Abort(.unauthorized, reason: "Invalid refresh token.")
+                }
 
-        // 2. Reuse Detection: If an already revoked token is used, suspect token theft
-        if existingToken.isRevoked {
-            // Invalidate ALL sessions/tokens for this user immediately
-            try await refreshTokenRepository.revokeAll(forUserID: existingToken.$user.id, on: req.db)
+                // 2. Reuse Detection: If an already revoked token is used, suspect token theft
+                guard !existingToken.isRevoked else {
+                    // Abort transaction and signal reuse detection so revocation persists
+                    throw TokenReuseError(userID: existingToken.$user.id)
+                }
 
-            req.logger.critical("Compromised token reuse detected for user ID: \(existingToken.$user.id). Revoked all sessions.")
+                // 3. Check expiration
+                guard existingToken.expiresAt > Date() else {
+                    existingToken.isRevoked = true
+                    try await refreshTokenRepository.update(existingToken, on: db)
+                    throw Abort(.unauthorized, reason: "Refresh token has expired.")
+                }
+
+                // 4. Invalidate used token
+                existingToken.isRevoked = true
+                try await refreshTokenRepository.update(existingToken, on: db)
+
+                // 5. Fetch associated student
+                guard let student = try await studentRepository.find(byID: existingToken.$user.id, on: db) else {
+                    throw Abort(.unauthorized, reason: "Invalid authentication state. User not found.")
+                }
+
+                guard student.status.isLoginPermitted else {
+                    throw Abort(.unauthorized, reason: "Account is suspended or inactive.")
+                }
+
+                // 6. Issue fresh token pair within the same transaction
+                return try await generateTokenPair(for: student, on: req, db: db)
+            }
+        } catch let reuseError as TokenReuseError {
+            // Revoke all sessions/tokens for this user identity (persisted to database)
+            try await refreshTokenRepository.revokeAll(forUserID: reuseError.userID, on: req.db)
+            req.logger.critical("Compromised token reuse detected for user ID: \(reuseError.userID). Revoked all sessions.")
+            throw Abort(.unauthorized, reason: "Invalid authentication state. Please log in again.")
+        } catch {
+            if let abort = error as? (any AbortError) {
+                throw abort
+            }
+            req.logger.warning("Database concurrency/lock error during refresh token rotation: \(error)")
             throw Abort(.unauthorized, reason: "Invalid authentication state. Please log in again.")
         }
-
-        // 3. Check expiration
-        guard existingToken.expiresAt > Date() else {
-            existingToken.isRevoked = true
-            try await refreshTokenRepository.update(existingToken, on: req.db)
-            throw Abort(.unauthorized, reason: "Refresh token has expired.")
-        }
-
-        // 4. Invalidate used token
-        existingToken.isRevoked = true
-        try await refreshTokenRepository.update(existingToken, on: req.db)
-
-        // 5. Fetch associated student
-        guard let student = try await studentRepository.find(byID: existingToken.$user.id, on: req.db) else {
-            throw Abort(.unauthorized, reason: "Invalid authentication state. User not found.")
-        }
-
-        guard student.status.isLoginPermitted else {
-            throw Abort(.unauthorized, reason: "Account is suspended or inactive.")
-        }
-
-        // 6. Issue fresh token pair
-        return try await generateTokenPair(for: student, on: req)
     }
 
     // MARK: - Refresh Token Revocation
@@ -112,6 +135,10 @@ struct TokenService: TokenServiceProtocol {
     func revokeRefreshToken(rawToken: String, on db: any Database) async throws {
         let tokenHash = Self.hashToken(rawToken)
         try await refreshTokenRepository.revoke(byHash: tokenHash, on: db)
+    }
+
+    func revokeAllSessions(for studentID: UUID, on db: any Database) async throws {
+        try await refreshTokenRepository.revokeAll(forUserID: studentID, on: db)
     }
 
     static func hashToken(_ token: String) -> String {
