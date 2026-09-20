@@ -61,7 +61,17 @@ struct RefreshTokenRow: Decodable, Sendable {
             self.expiresAt = Date(timeIntervalSince1970: timestamp)
         } else if let dateStr = try? container.decode(String.self, forKeys: ["expiresat", "expiresAt", "expires_at", "EXPIRES_AT"]) {
             let formatter = ISO8601DateFormatter()
-            self.expiresAt = formatter.date(from: dateStr) ?? Date()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatter.date(from: dateStr) ?? ISO8601DateFormatter().date(from: dateStr) {
+                self.expiresAt = date
+            } else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath,
+                        debugDescription: "Invalid ISO-8601 date string for token expiration: '\(dateStr)'"
+                    )
+                )
+            }
         } else {
             self.expiresAt = try container.decode(Date.self, forKeys: ["expiresat", "expiresAt", "expires_at", "EXPIRES_AT"])
         }
@@ -177,7 +187,7 @@ struct DatabaseRefreshTokenRepository: RefreshTokenRepository {
         }
 
         // PostgreSQL & SQLite: Atomic UPDATE-first in one statement with RETURNING
-        let updatedRow: RefreshTokenRow? = try? await sql.raw("""
+        let updatedRow: RefreshTokenRow? = try await sql.raw("""
             UPDATE refresh_tokens
             SET is_revoked = true
             WHERE token_hash = \(bind: tokenHash)
@@ -199,7 +209,7 @@ struct DatabaseRefreshTokenRepository: RefreshTokenRepository {
         }
 
         // Zero rows updated: Distinguish not found, already revoked (replay), or expired
-        let existingRow: RefreshTokenRow? = try? await sql.raw("""
+        let existingRow: RefreshTokenRow? = try await sql.raw("""
             SELECT id, user_id, expires_at, is_revoked
             FROM refresh_tokens
             WHERE token_hash = \(bind: tokenHash)
@@ -214,7 +224,7 @@ struct DatabaseRefreshTokenRepository: RefreshTokenRepository {
         }
 
         if existing.expiresAt <= now {
-            _ = try? await sql.raw("""
+            try await sql.raw("""
                 UPDATE refresh_tokens
                 SET is_revoked = true
                 WHERE token_hash = \(bind: tokenHash)
