@@ -2906,6 +2906,143 @@ struct StudentAppBackendTests {
             )
         }
     }
+
+    @Test("Atomic consumeIfActive: single-use semantics and reuse detection")
+    func testAtomicConsumeIfActive() async throws {
+        try await withApp { app in
+            let student = try await registerStudent(email: "consume_test@example.com", on: app)
+            guard let studentID = student.id else {
+                Issue.record("Missing student ID")
+                return
+            }
+            let rawToken = [UInt8].random(count: 32).map { String(format: "%02hhx", $0) }.joined()
+            let tokenHash = TokenService.hashToken(rawToken)
+
+            let repo = DatabaseRefreshTokenRepository()
+            let tokenModel = RefreshToken(
+                tokenHash: tokenHash,
+                userID: studentID,
+                expiresAt: Date().addingTimeInterval(3600),
+                isRevoked: false
+            )
+            try await repo.create(tokenModel, on: app.db)
+
+            // First consume: should succeed (.consumed)
+            let firstResult = try await repo.consumeIfActive(byHash: tokenHash, on: app.db)
+            switch firstResult {
+            case .consumed(let consumedToken):
+                #expect(consumedToken.isRevoked == true)
+            default:
+                Issue.record("Expected .consumed on first consume, got: \(firstResult)")
+            }
+
+            // Second consume: should detect reuse (.alreadyRevoked)
+            let secondResult = try await repo.consumeIfActive(byHash: tokenHash, on: app.db)
+            switch secondResult {
+            case .alreadyRevoked(let userID):
+                #expect(userID == studentID)
+            default:
+                Issue.record("Expected .alreadyRevoked on second consume, got: \(secondResult)")
+            }
+
+            // Non-existent token: should return .notFound
+            let unknownResult = try await repo.consumeIfActive(byHash: "unknown_hash", on: app.db)
+            switch unknownResult {
+            case .notFound:
+                #expect(true)
+            default:
+                Issue.record("Expected .notFound, got: \(unknownResult)")
+            }
+        }
+    }
+
+    @Test("Unified Error: Malformed JSON body returns HTTP 400 with BAD_REQUEST envelope")
+    func testMalformedJSONBodyReturnsUnifiedBadRequest() async throws {
+        try await withApp { app in
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    req.headers.contentType = .json
+                    req.body = ByteBuffer(string: "{ \"email\": \"bad json format")
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .badRequest)
+                    let errorEnvelope = try res.content.decode(UnifiedErrorResponseTest.self)
+                    #expect(errorEnvelope.error.code == "BAD_REQUEST")
+                    #expect(!errorEnvelope.error.message.isEmpty)
+                    #expect(!errorEnvelope.error.timestamp.isEmpty)
+                }
+            )
+        }
+    }
+
+    @Test("Unified Error: 404 Route Not Found returns standardized error envelope")
+    func testUnifiedErrorNotFound() async throws {
+        try await withApp { app in
+            try await app.testing().test(
+                .GET, "non-existent-route-404",
+                afterResponse: { res async throws in
+                    #expect(res.status == .notFound)
+                    let errorEnvelope = try res.content.decode(UnifiedErrorResponseTest.self)
+                    #expect(errorEnvelope.error.code == "NOT_FOUND")
+                    #expect(!errorEnvelope.error.message.isEmpty)
+                    #expect(!errorEnvelope.error.timestamp.isEmpty)
+                }
+            )
+        }
+    }
+
+    @Test("Token lifecycle: cleanup removes expired and revoked tokens")
+    func testTokenCleanupExpiredAndRevoked() async throws {
+        try await withApp { app in
+            let student = try await registerStudent(email: "cleanup_test@example.com", on: app)
+            guard let studentID = student.id else {
+                Issue.record("Missing student ID")
+                return
+            }
+            let repo = DatabaseRefreshTokenRepository()
+
+            // 1. Expired token
+            let expiredToken = RefreshToken(
+                tokenHash: "expired_hash_1",
+                userID: studentID,
+                expiresAt: Date().addingTimeInterval(-3600),
+                isRevoked: false
+            )
+            try await repo.create(expiredToken, on: app.db)
+
+            // 2. Revoked token
+            let revokedToken = RefreshToken(
+                tokenHash: "revoked_hash_2",
+                userID: studentID,
+                expiresAt: Date().addingTimeInterval(3600),
+                isRevoked: true
+            )
+            try await repo.create(revokedToken, on: app.db)
+
+            // 3. Active valid token
+            let activeToken = RefreshToken(
+                tokenHash: "active_hash_3",
+                userID: studentID,
+                expiresAt: Date().addingTimeInterval(3600),
+                isRevoked: false
+            )
+            try await repo.create(activeToken, on: app.db)
+
+            let cleanedCount = try await TokenService.shared.cleanupExpiredTokens(on: app.db)
+            #expect(cleanedCount == 2)
+
+            // Assert active token is still present
+            let foundActive = try await repo.find(byHash: "active_hash_3", on: app.db)
+            #expect(foundActive != nil)
+
+            // Assert expired and revoked tokens are removed
+            let foundExpired = try await repo.find(byHash: "expired_hash_1", on: app.db)
+            #expect(foundExpired == nil)
+            let foundRevoked = try await repo.find(byHash: "revoked_hash_2", on: app.db)
+            #expect(foundRevoked == nil)
+        }
+    }
 }
 
 // MARK: - Test Request/Response Types

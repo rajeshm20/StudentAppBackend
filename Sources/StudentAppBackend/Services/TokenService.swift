@@ -16,18 +16,22 @@ protocol TokenServiceProtocol: Sendable {
     func rotateRefreshToken(rawToken: String, on req: Request) async throws -> TokenPairResponse
     func revokeRefreshToken(rawToken: String, on db: any Database) async throws
     func revokeAllSessions(for studentID: UUID, on db: any Database) async throws
+    func cleanupExpiredTokens(on db: any Database) async throws -> Int
 }
 
 struct TokenService: TokenServiceProtocol {
     private let refreshTokenRepository: any RefreshTokenRepository
     private let studentRepository: any StudentRepository
+    private let revokedTokenRepository: any RevokedTokenRepository
 
     init(
         refreshTokenRepository: any RefreshTokenRepository = DatabaseRefreshTokenRepository(),
-        studentRepository: any StudentRepository = DatabaseStudentRepository()
+        studentRepository: any StudentRepository = DatabaseStudentRepository(),
+        revokedTokenRepository: any RevokedTokenRepository = DatabaseRevokedTokenRepository()
     ) {
         self.refreshTokenRepository = refreshTokenRepository
         self.studentRepository = studentRepository
+        self.revokedTokenRepository = revokedTokenRepository
     }
 
     static let shared = TokenService()
@@ -82,39 +86,33 @@ struct TokenService: TokenServiceProtocol {
 
         do {
             return try await req.db.transaction { db in
-                // 1. Locate token by hash within the transaction
-                guard let existingToken = try await refreshTokenRepository.find(byHash: tokenHash, on: db) else {
+                // 1. Atomically check and consume token with row-level lock (FOR UPDATE)
+                let consumeResult = try await refreshTokenRepository.consumeIfActive(byHash: tokenHash, on: db)
+
+                switch consumeResult {
+                case .notFound:
                     throw Abort(.unauthorized, reason: "Invalid refresh token.")
-                }
 
-                // 2. Reuse Detection: If an already revoked token is used, suspect token theft
-                guard !existingToken.isRevoked else {
-                    // Abort transaction and signal reuse detection so revocation persists
-                    throw TokenReuseError(userID: existingToken.$user.id)
-                }
+                case .alreadyRevoked(let userID):
+                    // Abort transaction and signal reuse detection so user session revocation persists
+                    throw TokenReuseError(userID: userID)
 
-                // 3. Check expiration
-                guard existingToken.expiresAt > Date() else {
-                    existingToken.isRevoked = true
-                    try await refreshTokenRepository.update(existingToken, on: db)
+                case .expired:
                     throw Abort(.unauthorized, reason: "Refresh token has expired.")
+
+                case .consumed(let existingToken):
+                    // 2. Fetch associated student via repository abstraction
+                    guard let student = try await studentRepository.find(byID: existingToken.$user.id, on: db) else {
+                        throw Abort(.unauthorized, reason: "Invalid authentication state. User not found.")
+                    }
+
+                    guard student.status.isLoginPermitted else {
+                        throw Abort(.unauthorized, reason: "Account is suspended or inactive.")
+                    }
+
+                    // 3. Issue fresh token pair within the same transaction
+                    return try await generateTokenPair(for: student, on: req, db: db)
                 }
-
-                // 4. Invalidate used token
-                existingToken.isRevoked = true
-                try await refreshTokenRepository.update(existingToken, on: db)
-
-                // 5. Fetch associated student
-                guard let student = try await studentRepository.find(byID: existingToken.$user.id, on: db) else {
-                    throw Abort(.unauthorized, reason: "Invalid authentication state. User not found.")
-                }
-
-                guard student.status.isLoginPermitted else {
-                    throw Abort(.unauthorized, reason: "Account is suspended or inactive.")
-                }
-
-                // 6. Issue fresh token pair within the same transaction
-                return try await generateTokenPair(for: student, on: req, db: db)
             }
         } catch let reuseError as TokenReuseError {
             // Revoke all sessions/tokens for this user identity (persisted to database)
@@ -125,12 +123,12 @@ struct TokenService: TokenServiceProtocol {
             if let abort = error as? (any AbortError) {
                 throw abort
             }
-            req.logger.warning("Database concurrency/lock error during refresh token rotation: \(error)")
+            req.logger.warning("Database error during refresh token rotation: \(error)")
             throw Abort(.unauthorized, reason: "Invalid authentication state. Please log in again.")
         }
     }
 
-    // MARK: - Refresh Token Revocation
+    // MARK: - Refresh Token Revocation & Lifecycle Cleanup
 
     func revokeRefreshToken(rawToken: String, on db: any Database) async throws {
         let tokenHash = Self.hashToken(rawToken)
@@ -139,6 +137,10 @@ struct TokenService: TokenServiceProtocol {
 
     func revokeAllSessions(for studentID: UUID, on db: any Database) async throws {
         try await refreshTokenRepository.revokeAll(forUserID: studentID, on: db)
+    }
+
+    func cleanupExpiredTokens(on db: any Database) async throws -> Int {
+        try await refreshTokenRepository.deleteExpiredOrRevoked(before: Date(), on: db)
     }
 
     static func hashToken(_ token: String) -> String {
@@ -164,9 +166,8 @@ struct TokenService: TokenServiceProtocol {
     static func verifyAccessToken(_ token: String, on request: Request) async throws -> StudentToken {
         let payload = try request.jwt.verify(token, as: StudentToken.self)
 
-        if try await RevokedToken.query(on: request.db)
-            .filter(\.$jti == payload.jti.value)
-            .first() != nil {
+        let isRevoked = try await shared.revokedTokenRepository.isRevoked(jti: payload.jti.value, on: request.db)
+        if isRevoked {
             throw Abort(.unauthorized, reason: "Token revoked")
         }
 
@@ -185,7 +186,7 @@ struct TokenService: TokenServiceProtocol {
 
         let payload = try await verifyAccessToken(bearer.token, on: request)
 
-        guard let student = try await Student.find(payload.studentID, on: request.db) else {
+        guard let student = try await shared.studentRepository.find(byID: payload.studentID, on: request.db) else {
             throw Abort(.unauthorized, reason: "Invalid token")
         }
 
@@ -198,8 +199,7 @@ struct TokenService: TokenServiceProtocol {
 
     /// Revokes an access token's JTI.
     static func revokeToken(_ payload: StudentToken, on database: any Database) async throws {
-        let revokedToken = RevokedToken(jti: payload.jti.value, expiresAt: payload.exp.value)
-        try await revokedToken.save(on: database)
+        try await shared.revokedTokenRepository.revoke(jti: payload.jti.value, expiresAt: payload.exp.value, on: database)
     }
 }
 

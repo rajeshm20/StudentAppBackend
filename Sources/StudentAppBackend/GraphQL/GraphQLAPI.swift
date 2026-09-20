@@ -28,15 +28,26 @@ struct GraphQLRequestBody: Content, @unchecked Sendable {
 // MARK: - GraphQL Resolver
 
 struct GraphQLResolver {
+    private let studentRepository: any StudentRepository
+    private let studentService: any StudentServiceProtocol
+
+    init(
+        studentRepository: any StudentRepository = DatabaseStudentRepository(),
+        studentService: any StudentServiceProtocol = StudentService.shared
+    ) {
+        self.studentRepository = studentRepository
+        self.studentService = studentService
+    }
 
     // MARK: - Queries
 
     /// Fetches students based on the authenticated user's role.
     /// Authorization: same policy as REST GET /students — scoped by role via AuthorizationService.
     func students(request: Request, arguments: NoArguments) throws -> EventLoopFuture<[Student.Public]> {
-        request.eventLoop.makeFutureWithTask {
+        let repo = self.studentRepository
+        return request.eventLoop.makeFutureWithTask {
             let requester = try await TokenService.authenticateStudent(from: request)
-            let allStudents = try await Student.query(on: request.db).all()
+            let allStudents = try await repo.all(on: request.db)
             let accessible = AuthorizationService.filterAccessibleStudents(requester: requester, allStudents: allStudents)
             return accessible.map { $0.convertToPublic() }
         }
@@ -45,14 +56,15 @@ struct GraphQLResolver {
     /// Fetches a single student by ID with resource-level authorization.
     /// Authorization: identical to REST GET /students/:id
     func student(request: Request, arguments: StudentByIDArguments) throws -> EventLoopFuture<Student.Public?> {
-        request.eventLoop.makeFutureWithTask {
+        let repo = self.studentRepository
+        return request.eventLoop.makeFutureWithTask {
             let requester = try await TokenService.authenticateStudent(from: request)
 
             guard AuthorizationService.canAccessStudentRecord(requester: requester, targetStudentID: arguments.id) else {
                 throw Abort(.forbidden, reason: "You are not authorized to access this student record")
             }
 
-            guard let target = try await Student.find(arguments.id, on: request.db) else {
+            guard let target = try await repo.find(byID: arguments.id, on: request.db) else {
                 return nil
             }
             return target.convertToPublic()
@@ -64,7 +76,8 @@ struct GraphQLResolver {
     /// New canonical student signup mutation.
     /// Role is assigned server-side (always student). confirmPassword is validated but never persisted.
     func signupStudent(request: Request, arguments: SignupStudentArguments) throws -> EventLoopFuture<Student.Public> {
-        request.eventLoop.makeFutureWithTask {
+        let service = self.studentService
+        return request.eventLoop.makeFutureWithTask {
             let input = arguments.input
 
             let validationErrors = validateStudentSignupRequest(
@@ -92,7 +105,7 @@ struct GraphQLResolver {
                 contactNumber: input.contactNumber
             )
 
-            let student = try await StudentService.shared.signupStudent(request: signupRequest, on: request.db)
+            let student = try await service.signupStudent(request: signupRequest, on: request.db)
             return student.convertToPublic()
         }
     }
@@ -101,7 +114,8 @@ struct GraphQLResolver {
     /// Uses the old CreateRequest (name/email/password/dob/phoneNumber).
     /// Role forced to .student server-side.
     func signup(request: Request, arguments: SignupArguments) throws -> EventLoopFuture<Student.Public> {
-        request.eventLoop.makeFutureWithTask {
+        let repo = self.studentRepository
+        return request.eventLoop.makeFutureWithTask {
             let input = arguments.input
 
             let validationErrors = validateStudentCreateRequest(
@@ -118,7 +132,7 @@ struct GraphQLResolver {
             }
 
             let normalizedEmail = input.email.lowercased().trimmingCharacters(in: .whitespaces)
-            if try await Student.query(on: request.db).filter(\.$email == normalizedEmail).first() != nil {
+            if try await repo.find(byEmail: normalizedEmail, on: request.db) != nil {
                 throw Abort(.conflict, reason: "An account with this email already exists", identifier: "EMAIL_ALREADY_EXISTS")
             }
 
@@ -137,7 +151,7 @@ struct GraphQLResolver {
             )
 
             do {
-                try await student.save(on: request.db)
+                try await repo.create(student, on: request.db)
             } catch {
                 throw StudentService.mapDatabaseError(error)
             }
@@ -147,13 +161,14 @@ struct GraphQLResolver {
 
     /// Authenticates user and returns a JWT. Role is always from the server-side record.
     func login(request: Request, arguments: LoginArguments) throws -> EventLoopFuture<AuthPayload> {
-        request.eventLoop.makeFutureWithTask {
+        let service = self.studentService
+        return request.eventLoop.makeFutureWithTask {
             let credentials = Student.LoginRequest(
                 email: arguments.input.email,
                 password: arguments.input.password
             )
 
-            guard let student = try await StudentService.shared.authenticate(credentials: credentials, on: request.db) else {
+            guard let student = try await service.authenticate(credentials: credentials, on: request.db) else {
                 throw Abort(.unauthorized, reason: "Invalid email or password")
             }
 
@@ -175,7 +190,7 @@ struct GraphQLResolver {
             throw Abort(.forbidden, reason: "You can only update your own student record")
         }
 
-        guard let student = try await Student.find(arguments.input.id, on: context.db) else {
+        guard let student = try await self.studentRepository.find(byID: arguments.input.id, on: context.db) else {
             throw Abort(.notFound, reason: "Student not found")
         }
 
@@ -194,7 +209,7 @@ struct GraphQLResolver {
         if let name = arguments.input.name { student.name = name }
         if let phoneNumber = arguments.input.phoneNumber { student.phoneNumber = phoneNumber }
 
-        try await student.save(on: context.db)
+        try await self.studentRepository.update(student, on: context.db)
         return student.convertToPublic()
     }
 }

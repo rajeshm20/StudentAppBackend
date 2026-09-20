@@ -62,7 +62,7 @@ flowchart TD
     end
 
     subgraph SecurityPipeline["Security & Gateway Middleware"]
-        UnifiedErr["UnifiedErrorMiddleware<br/>(RFC 7807 Standard Error Payloads)"]
+        UnifiedErr["UnifiedErrorMiddleware<br/>(Unified API Error Envelopes)"]
         SecHeaders["SecurityHeadersMiddleware<br/>(HSTS, CSP, X-Frame-Options)"]
         CORS["CORSMiddleware<br/>(Strict Origin Validation)"]
         RateLimit["RateLimiterMiddleware<br/>(DDoS / Brute-Force Throttling)"]
@@ -88,7 +88,9 @@ flowchart TD
 
     subgraph Repositories["Data Repositories (Protocol-Driven)"]
         StudentRepo["StudentRepository<br/>(Student Identity & Lookups)"]
-        RefreshRepo["RefreshTokenRepository<br/>(Hashed Token Storage & Family Invalidation)"]
+        RefreshRepo["RefreshTokenRepository<br/>(Atomic Token Consume & Cleanup)"]
+        ResetRepo["PasswordResetRepository<br/>(OTP Verification & Sessions)"]
+        RevokedRepo["RevokedTokenRepository<br/>(Access Token JTI Denylist)"]
     end
 
     subgraph Persistence["Persistence Tier (Fluent ORM & Concurrency Pool)"]
@@ -124,10 +126,15 @@ flowchart TD
     EmailSvc -.->|"AsyncHTTPClient"| SendGrid
     StudentSvc --> StudentRepo
     TokenSvc --> RefreshRepo
-    TokenSvc --> Fluent
+    TokenSvc --> RevokedRepo
+    TokenSvc --> StudentRepo
+    AuthRoutes --> ResetRepo
+    GraphQLRoute --> StudentRepo
 
     StudentRepo --> Fluent
     RefreshRepo --> Fluent
+    ResetRepo --> Fluent
+    RevokedRepo --> Fluent
 
     Fluent --> Postgres
     Fluent --> RefreshTokens
@@ -167,7 +174,7 @@ flowchart TD
 - **Session Revocation**: `POST /auth/logout` invalidates both access tokens and active refresh token families in real-time.
 - **Protected Student Resources**: `GET /students/:studentID` enforces fine-grained authorization via `AuthorizationService` to strictly block Insecure Direct Object References (IDOR).
 - **Probes**: `GET /health/live` for liveness checks and `GET /health/ready` for database readiness validation (`SELECT 1`).
-- **Unified Error Responses**: `UnifiedErrorMiddleware` intercepts all HTTP errors and exceptions to emit RFC 7807-compliant payloads with deterministic machine error codes and ISO 8601 timestamps.
+- **Unified Error Responses**: `UnifiedErrorMiddleware` intercepts all HTTP errors, validation errors, decoding exceptions, and unhandled failures to emit standardized envelopes with deterministic machine error codes (`code`), human-readable messages (`message`), and ISO 8601 timestamps.
 
 ### GraphQL API
 - **Full-Featured GraphQL Endpoint**: `POST /graphql` provides queries and mutations matching REST parity.
@@ -190,7 +197,7 @@ flowchart TD
 - **Console Fallback**: Automatically falls back to console logging when `SENDGRID_API_KEY` is not supplied in local environments.
 
 ### Security & Enterprise Hardening
-- **Repository Abstraction Layer**: Protocol-driven `StudentRepository` and `RefreshTokenRepository` isolate business logic from database drivers, enabling pure mock testing and clean architectural decoupling.
+- **Repository Abstraction Layer**: Protocol-driven `StudentRepository`, `RefreshTokenRepository`, `PasswordResetRepository`, and `RevokedTokenRepository` isolate business logic from database drivers, ensuring controllers and GraphQL resolvers are 100% decoupled from direct Fluent ORM calls.
 - **Tuned Concurrency & Connection Pooling**: Production-tuned PostgreSQL connection pools (`maxConnectionsPerEventLoop: 8`, `connectionPoolTimeout: 10s`) prevent thread starvation under heavy load.
 - **Strict TLS Controls**: Minimum TLS 1.2 enforcement (configurable up to TLS 1.3) with hardened AEAD cipher suites (`ECDHE-*-GCM-*` and `CHACHA20-POLY1305`).
 - **HTTP Strict Transport Security (HSTS)**: Configurable HSTS headers with preload list validation and reverse-proxy header trust.
@@ -427,7 +434,9 @@ The application strictly validates environment variables during startup and fail
 }
 ```
 
-#### Unified Error Response (`RFC 7807 Format`)
+> **Note on Login Response Backward Compatibility**: The canonical token pair is returned in `tokens` (`accessToken` and `refreshToken`). The top-level `token` object is maintained for legacy client compatibility and is scheduled for deprecation in v2.0.
+
+#### Unified API Error Envelope
 
 ```json
 // Response (401 Unauthorized)
@@ -439,6 +448,11 @@ The application strictly validates environment variables during startup and fail
   }
 }
 ```
+
+The error envelope provides a consistent contract across all endpoints:
+- `code`: Deterministic machine-readable error identifier (e.g., `BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `EMAIL_ALREADY_EXISTS`, `INTERNAL_SERVER_ERROR`).
+- `message`: Descriptive human-readable explanation safe for client consumption.
+- `timestamp`: ISO 8601 string with millisecond precision recording when the error occurred.
 
 </details>
 
@@ -513,7 +527,7 @@ swift test -v
 - **Refresh Token Rotation (RTR)**: Validates single-use token rotation, token expiry, cryptographic SHA-256 hash lookups, and session issuance.
 - **Compromise Detection & Family Invalidation**: Asserts that attempting to reuse an already-revoked refresh token immediately invalidates the entire session family for that student.
 - **Repository Abstraction Layer**: Verifies decoupled persistence logic across `StudentRepository` and `RefreshTokenRepository`.
-- **RFC 7807 Unified Errors**: Tests verify uniform error payloads (`code`, `message`, `timestamp`) across both HTTP abort exceptions and unhandled system errors.
+- **Unified API Error Envelopes**: Tests verify uniform error payloads (`code`, `message`, `timestamp`) across HTTP abort exceptions, malformed request bodies, and unhandled system errors.
 - **RBAC & Privilege Escalation**: Tests verify that client-supplied role parameters are discarded during registration.
 - **IDOR Prevention**: Asserts that student tokens attempting to access foreign `studentID` records receive `403 Forbidden`.
 - **Credential Hygiene**: Validates E.164 phone formatting, password complexity limits, and email normalization.

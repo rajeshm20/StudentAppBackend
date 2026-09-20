@@ -34,6 +34,21 @@ final class UnifiedErrorMiddleware: AsyncMiddleware {
                 } else {
                     code = defaultCode(for: abort.status)
                 }
+            } else if let decoding = error as? DecodingError {
+                status = .badRequest
+                code = "BAD_REQUEST"
+                switch decoding {
+                case .keyNotFound(let key, _):
+                    reason = "Missing required field: '\(key.stringValue)'."
+                case .typeMismatch(_, let context):
+                    reason = "Type mismatch: \(context.debugDescription)"
+                case .valueNotFound(_, let context):
+                    reason = "Value missing: \(context.debugDescription)"
+                case .dataCorrupted(let context):
+                    reason = "Malformed request payload: \(context.debugDescription)"
+                @unknown default:
+                    reason = "Invalid request payload format."
+                }
             } else {
                 status = .internalServerError
                 reason = environment == .production ? "An internal error occurred." : String(describing: error)

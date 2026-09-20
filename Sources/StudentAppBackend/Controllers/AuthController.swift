@@ -11,15 +11,18 @@ struct AuthController: RouteCollection {
     private let studentService: any StudentServiceProtocol
     private let tokenService: any TokenServiceProtocol
     private let studentRepository: any StudentRepository
+    private let passwordResetRepository: any PasswordResetRepository
 
     init(
         studentService: any StudentServiceProtocol = StudentService.shared,
         tokenService: any TokenServiceProtocol = TokenService.shared,
-        studentRepository: any StudentRepository = DatabaseStudentRepository()
+        studentRepository: any StudentRepository = DatabaseStudentRepository(),
+        passwordResetRepository: any PasswordResetRepository = DatabasePasswordResetRepository()
     ) {
         self.studentService = studentService
         self.tokenService = tokenService
         self.studentRepository = studentRepository
+        self.passwordResetRepository = passwordResetRepository
     }
 
     func boot(routes: any RoutesBuilder) throws {
@@ -183,7 +186,7 @@ struct AuthController: RouteCollection {
             code: code,
             codeExpiresAt: Date().addingTimeInterval(10 * 60)
         )
-        try await resetToken.save(on: req.db)
+        try await passwordResetRepository.create(resetToken, on: req.db)
 
         do {
             try await req.application.emailService.send(
@@ -210,19 +213,13 @@ struct AuthController: RouteCollection {
         let request = try req.content.decode(VerifyResetCodeRequest.self)
         let normalizedEmail = request.email.lowercased().trimmingCharacters(in: .whitespaces)
 
-        guard let resetToken = try await PasswordResetToken.query(on: req.db)
-            .filter(\.$email == normalizedEmail)
-            .filter(\.$used == false)
-            .filter(\.$verified == false)
-            .sort(\.$codeExpiresAt, .descending)
-            .first()
-        else {
+        guard let resetToken = try await passwordResetRepository.findLatestActiveCode(forEmail: normalizedEmail, on: req.db) else {
             return VerifyResetCodeResponse(success: false, message: "Invalid or expired code.", sessionToken: nil)
         }
 
         if resetToken.attempts >= 3 {
             resetToken.used = true
-            try await resetToken.save(on: req.db)
+            try await passwordResetRepository.update(resetToken, on: req.db)
             return VerifyResetCodeResponse(success: false, message: "Too many failed attempts. Please request a new code.", sessionToken: nil)
         }
 
@@ -235,7 +232,7 @@ struct AuthController: RouteCollection {
             if resetToken.attempts >= 3 {
                 resetToken.used = true
             }
-            try await resetToken.save(on: req.db)
+            try await passwordResetRepository.update(resetToken, on: req.db)
             return VerifyResetCodeResponse(success: false, message: "Invalid code.", sessionToken: nil)
         }
 
@@ -243,7 +240,7 @@ struct AuthController: RouteCollection {
         resetToken.verified = true
         resetToken.sessionToken = sessionToken
         resetToken.sessionExpiresAt = Date().addingTimeInterval(15 * 60)
-        try await resetToken.save(on: req.db)
+        try await passwordResetRepository.update(resetToken, on: req.db)
 
         return VerifyResetCodeResponse(success: true, message: "Code verified.", sessionToken: sessionToken)
     }
@@ -262,13 +259,7 @@ struct AuthController: RouteCollection {
             throw Abort(.badRequest, reason: "Password must be at least 8 characters")
         }
 
-        guard let resetToken = try await PasswordResetToken.query(on: req.db)
-            .filter(\.$email == normalizedEmail)
-            .filter(\.$sessionToken == request.sessionToken)
-            .filter(\.$verified == true)
-            .filter(\.$used == false)
-            .first()
-        else {
+        guard let resetToken = try await passwordResetRepository.findVerifiedSession(forEmail: normalizedEmail, sessionToken: request.sessionToken, on: req.db) else {
             throw Abort(.badRequest, reason: "Invalid or expired reset session")
         }
 
@@ -284,7 +275,7 @@ struct AuthController: RouteCollection {
         try await studentRepository.update(student, on: req.db)
 
         resetToken.used = true
-        try await resetToken.save(on: req.db)
+        try await passwordResetRepository.update(resetToken, on: req.db)
 
         return ResetPasswordResponse(success: true, message: "Password reset successfully")
     }
