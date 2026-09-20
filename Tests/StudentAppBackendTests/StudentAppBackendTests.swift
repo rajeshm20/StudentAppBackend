@@ -2700,6 +2700,42 @@ struct StudentAppBackendTests {
         }
     }
 
+    @Test("Refresh token: expired token returns 401 and persists revocation in database")
+    func testExpiredRefreshTokenPersistsRevocation() async throws {
+        try await withApp { app in
+            let student = try await registerStudent(email: "expiredrefresh@example.com", on: app)
+            guard let studentID = student.id else {
+                Issue.record("Missing student ID")
+                return
+            }
+            let rawRefreshToken = "test_expired_refresh_token_string"
+            let tokenHash = TokenService.hashToken(rawRefreshToken)
+
+            let repo = DatabaseRefreshTokenRepository()
+            let expiredModel = RefreshToken(
+                tokenHash: tokenHash,
+                userID: studentID,
+                expiresAt: Date().addingTimeInterval(-3600),
+                isRevoked: false
+            )
+            try await repo.create(expiredModel, on: app.db)
+
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": rawRefreshToken])
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .unauthorized)
+                }
+            )
+
+            let stored = try await repo.find(byHash: tokenHash, on: app.db)
+            #expect(stored != nil)
+            #expect(stored?.isRevoked == true)
+        }
+    }
+
     @Test("Logout without refresh-token body revokes all refresh tokens for authenticated student")
     func testLogoutRevokesRefreshTokensWithoutBody() async throws {
         try await withApp { app in

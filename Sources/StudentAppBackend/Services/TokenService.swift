@@ -77,33 +77,39 @@ struct TokenService: TokenServiceProtocol {
 
     // MARK: - Refresh Token Rotation & Reuse Detection
 
-    private struct TokenReuseError: Error {
-        let userID: UUID
+    private enum RotationOutcome {
+        case issued(TokenPairResponse)
+        case notFound
+        case reuseDetected(userID: UUID)
+        case expired
     }
 
     func rotateRefreshToken(rawToken: String, on req: Request) async throws -> TokenPairResponse {
         let tokenHash = Self.hashToken(rawToken)
 
         do {
-            return try await req.db.transaction { db in
-                // 1. Atomically check and consume token with row-level lock (FOR UPDATE)
+            let outcome = try await req.db.transaction { db -> RotationOutcome in
+                // 1. Atomically check and consume token with row-level lock (FOR UPDATE / UPDATE ... RETURNING)
                 let consumeResult = try await refreshTokenRepository.consumeIfActive(byHash: tokenHash, on: db)
 
                 switch consumeResult {
                 case .notFound:
-                    throw Abort(.unauthorized, reason: "Invalid refresh token.")
+                    return .notFound
 
                 case .alreadyRevoked(let userID):
-                    // Abort transaction and signal reuse detection so user session revocation persists
-                    throw TokenReuseError(userID: userID)
+                    // Atomically revoke all user sessions within the same transaction and commit
+                    try await refreshTokenRepository.revokeAll(forUserID: userID, on: db)
+                    return .reuseDetected(userID: userID)
 
                 case .expired:
-                    throw Abort(.unauthorized, reason: "Refresh token has expired.")
+                    // consumeIfActive already marked this expired token as revoked in the database;
+                    // committing the transaction guarantees this lifecycle state transition persists.
+                    return .expired
 
                 case .consumed(let existingToken):
                     // 2. Fetch associated student via repository abstraction
                     guard let student = try await studentRepository.find(byID: existingToken.$user.id, on: db) else {
-                        throw Abort(.unauthorized, reason: "Invalid authentication state. User not found.")
+                        return .notFound
                     }
 
                     guard student.status.isLoginPermitted else {
@@ -111,14 +117,25 @@ struct TokenService: TokenServiceProtocol {
                     }
 
                     // 3. Issue fresh token pair within the same transaction
-                    return try await generateTokenPair(for: student, on: req, db: db)
+                    let pair = try await generateTokenPair(for: student, on: req, db: db)
+                    return .issued(pair)
                 }
             }
-        } catch let reuseError as TokenReuseError {
-            // Revoke all sessions/tokens for this user identity (persisted to database)
-            try await refreshTokenRepository.revokeAll(forUserID: reuseError.userID, on: req.db)
-            req.logger.critical("Compromised token reuse detected for user ID: \(reuseError.userID). Revoked all sessions.")
-            throw Abort(.unauthorized, reason: "Invalid authentication state. Please log in again.")
+
+            switch outcome {
+            case .issued(let pair):
+                return pair
+
+            case .notFound:
+                throw Abort(.unauthorized, reason: "Invalid refresh token.")
+
+            case .reuseDetected(let userID):
+                req.logger.critical("Compromised token reuse detected for user ID: \(userID). Revoked all sessions.")
+                throw Abort(.unauthorized, reason: "Invalid authentication state. Please log in again.")
+
+            case .expired:
+                throw Abort(.unauthorized, reason: "Refresh token has expired.")
+            }
         } catch {
             if let abort = error as? (any AbortError) {
                 throw abort
