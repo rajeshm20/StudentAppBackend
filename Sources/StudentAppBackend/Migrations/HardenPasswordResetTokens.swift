@@ -34,27 +34,28 @@ public struct HardenPasswordResetTokens: AsyncMigration {
             // 2. Invalidate any existing reset token rows to remediate legacy plaintext secrets
             try await sql.raw("UPDATE password_reset_tokens SET used = true WHERE used = false;").run()
 
-            // 3. Drop legacy plaintext and obsolete columns
+            // 3. Drop legacy plaintext and obsolete columns (single ALTER TABLE command in Postgres)
             try await sql.raw("""
-                ALTER TABLE password_reset_tokens DROP COLUMN IF EXISTS code;
-                ALTER TABLE password_reset_tokens DROP COLUMN IF EXISTS "sessionToken";
-                ALTER TABLE password_reset_tokens DROP COLUMN IF EXISTS session_token;
-                ALTER TABLE password_reset_tokens DROP COLUMN IF EXISTS "codeExpiresAt";
-                ALTER TABLE password_reset_tokens DROP COLUMN IF EXISTS "sessionExpiresAt";
+                ALTER TABLE password_reset_tokens 
+                    DROP COLUMN IF EXISTS code,
+                    DROP COLUMN IF EXISTS "sessionToken",
+                    DROP COLUMN IF EXISTS session_token,
+                    DROP COLUMN IF EXISTS "codeExpiresAt",
+                    DROP COLUMN IF EXISTS "sessionExpiresAt"
             """).run()
 
-            // 4. Create lookup and unique indexes
+            // 4. Create lookup and unique indexes as individual statements
             try await sql.raw("""
                 CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_email
-                ON password_reset_tokens (email);
+                ON password_reset_tokens (email)
             """).run()
             try await sql.raw("""
                 CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_code_expires_at
-                ON password_reset_tokens (code_expires_at);
+                ON password_reset_tokens (code_expires_at)
             """).run()
             try await sql.raw("""
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_password_reset_tokens_session_hash
-                ON password_reset_tokens (session_token_hash);
+                ON password_reset_tokens (session_token_hash)
             """).run()
 
         } else if isMySQL {

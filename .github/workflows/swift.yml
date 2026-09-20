@@ -67,6 +67,11 @@ jobs:
           echo "::add-mask::$JWT"
           echo "JWT_SECRET=$JWT" >> $GITHUB_ENV
 
+          HMAC_SECRET="${{ secrets.PASSWORD_RESET_HMAC_SECRET }}"
+          if [ -z "$HMAC_SECRET" ]; then HMAC_SECRET=$(openssl rand -base64 32); fi
+          echo "::add-mask::$HMAC_SECRET"
+          echo "PASSWORD_RESET_HMAC_SECRET=$HMAC_SECRET" >> $GITHUB_ENV
+
       - name: Cache Swift build
         uses: actions/cache@v4
         with:

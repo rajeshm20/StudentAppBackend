@@ -2067,12 +2067,12 @@ struct StudentAppBackendTests {
             try await sql.raw("DROP TABLE IF EXISTS legacy_password_reset_tokens;").run()
             try await sql.raw("""
                 CREATE TABLE legacy_password_reset_tokens (
-                    id TEXT PRIMARY KEY,
-                    email TEXT NOT NULL,
-                    code TEXT NOT NULL,
-                    sessionToken TEXT,
-                    codeExpiresAt TEXT NOT NULL,
-                    sessionExpiresAt TEXT,
+                    id VARCHAR(255) PRIMARY KEY,
+                    email VARCHAR(255) NOT NULL,
+                    code VARCHAR(255) NOT NULL,
+                    sessionToken VARCHAR(255),
+                    codeExpiresAt VARCHAR(255) NOT NULL,
+                    sessionExpiresAt VARCHAR(255),
                     verified INTEGER NOT NULL DEFAULT 0,
                     used INTEGER NOT NULL DEFAULT 0,
                     attempts INTEGER NOT NULL DEFAULT 0
@@ -2094,18 +2094,35 @@ struct StudentAppBackendTests {
             // Run HardenPasswordResetTokens migration
             try await HardenPasswordResetTokens().prepare(on: app.db)
 
-            // Inspect columns via PRAGMA table_info
-            struct ColInfo: Decodable {
-                let name: String
+            // Inspect columns across SQLite, PostgreSQL, and MySQL
+            let dialect = sql.dialect.name.lowercased()
+            let isPostgres = dialect.contains("postgres") || dialect.contains("psql")
+            let isMySQL = dialect.contains("mysql")
+
+            let colNames: Set<String>
+            if isPostgres || isMySQL {
+                struct InfoSchemaCol: Decodable {
+                    let column_name: String
+                }
+                let cols = try await sql.raw("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'password_reset_tokens'
+                """).all(decoding: InfoSchemaCol.self)
+                colNames = Set(cols.map { $0.column_name.lowercased() })
+            } else {
+                struct ColInfo: Decodable {
+                    let name: String
+                }
+                let cols = try await sql.raw("PRAGMA table_info(password_reset_tokens);").all(decoding: ColInfo.self)
+                colNames = Set(cols.map { $0.name.lowercased() })
             }
-            let cols = try await sql.raw("PRAGMA table_info(password_reset_tokens);").all(decoding: ColInfo.self)
-            let colNames = Set(cols.map { $0.name })
 
             // Legacy plaintext columns must be gone
             #expect(!colNames.contains("code"), "Legacy 'code' column must be dropped")
-            #expect(!colNames.contains("sessionToken"), "Legacy 'sessionToken' column must be dropped")
-            #expect(!colNames.contains("codeExpiresAt"), "Legacy 'codeExpiresAt' column must be dropped")
-            #expect(!colNames.contains("sessionExpiresAt"), "Legacy 'sessionExpiresAt' column must be dropped")
+            #expect(!colNames.contains("sessiontoken"), "Legacy 'sessionToken' column must be dropped")
+            #expect(!colNames.contains("codeexpiresat"), "Legacy 'codeExpiresAt' column must be dropped")
+            #expect(!colNames.contains("sessionexpiresat"), "Legacy 'sessionExpiresAt' column must be dropped")
 
             // New hardened columns must be present
             #expect(colNames.contains("code_hash"), "'code_hash' column must exist")
@@ -2114,11 +2131,13 @@ struct StudentAppBackendTests {
             #expect(colNames.contains("session_expires_at"), "'session_expires_at' column must exist")
 
             // Existing rows must be invalidated (used = true / 1)
-            struct TokenRow: Decodable {
-                let used: Int
+            let rows = try await sql.raw("SELECT used FROM password_reset_tokens WHERE id = \(bind: legacyId);").all()
+            guard let firstRow = rows.first else {
+                Issue.record("Legacy token row was unexpectedly removed or not found")
+                return
             }
-            let row = try await sql.raw("SELECT used FROM password_reset_tokens WHERE id = \(bind: legacyId);").first(decoding: TokenRow.self)
-            #expect(row?.used == 1, "Legacy token rows must be invalidated on migration")
+            let isUsed: Bool = (try? firstRow.decode(column: "used", as: Bool.self)) ?? ((try? firstRow.decode(column: "used", as: Int.self)) == 1)
+            #expect(isUsed, "Legacy token rows must be invalidated on migration")
         }
     }
 
