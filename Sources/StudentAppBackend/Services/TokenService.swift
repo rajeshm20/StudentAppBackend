@@ -8,6 +8,7 @@ import Fluent
 import Foundation
 import JWT
 import JWTKit
+import SQLKit
 import Vapor
 
 protocol TokenServiceProtocol: Sendable {
@@ -39,11 +40,25 @@ struct TokenService: TokenServiceProtocol {
     // MARK: - Token Pair Generation
 
     func generateTokenPair(for student: Student, on req: Request) async throws -> TokenPairResponse {
-        try await generateTokenPair(for: student, on: req, db: req.db)
+        try await req.db.transaction { db in
+            try await generateTokenPair(for: student, on: req, db: db)
+        }
     }
 
     func generateTokenPair(for student: Student, on req: Request, db: any Database) async throws -> TokenPairResponse {
         let studentID = try student.requireID()
+
+        // Acquire exclusive row-level lock on the student record to serialize token creation
+        // against concurrent reuse-revocation and session family invalidation.
+        if let sql = db as? (any SQLDatabase) {
+            _ = try await sql.select()
+                .column("id")
+                .from(Student.schema)
+                .where("id", .equal, studentID)
+                .for(.update)
+                .all()
+        }
+
         let expirationDelta = AppConfig.jwtAccessTTL()
         let payload = StudentToken(
             exp: ExpirationClaim(value: Date(timeIntervalSinceNow: expirationDelta)),
@@ -97,6 +112,16 @@ struct TokenService: TokenServiceProtocol {
                     return .notFound
 
                 case .alreadyRevoked(let userID):
+                    // Acquire exclusive row lock on the user so any concurrent token creation
+                    // for this user blocks until revocation is committed.
+                    if let sql = db as? (any SQLDatabase) {
+                        _ = try await sql.select()
+                            .column("id")
+                            .from(Student.schema)
+                            .where("id", .equal, userID)
+                            .for(.update)
+                            .all()
+                    }
                     // Atomically revoke all user sessions within the same transaction and commit
                     try await refreshTokenRepository.revokeAll(forUserID: userID, on: db)
                     return .reuseDetected(userID: userID)
@@ -116,7 +141,7 @@ struct TokenService: TokenServiceProtocol {
                         throw Abort(.unauthorized, reason: "Account is suspended or inactive.")
                     }
 
-                    // 3. Issue fresh token pair within the same transaction
+                    // 3. Issue fresh token pair within the same transaction (locks student row)
                     let pair = try await generateTokenPair(for: student, on: req, db: db)
                     return .issued(pair)
                 }
@@ -153,6 +178,14 @@ struct TokenService: TokenServiceProtocol {
     }
 
     func revokeAllSessions(for studentID: UUID, on db: any Database) async throws {
+        if let sql = db as? (any SQLDatabase) {
+            _ = try await sql.select()
+                .column("id")
+                .from(Student.schema)
+                .where("id", .equal, studentID)
+                .for(.update)
+                .all()
+        }
         try await refreshTokenRepository.revokeAll(forUserID: studentID, on: db)
     }
 

@@ -34,6 +34,62 @@ struct StudentAppBackendTests {
         try await app.asyncShutdown()
     }
 
+    // MARK: - Production Database (PostgreSQL) Test Harness
+
+    private static func isPostgresReachable(host: String = "localhost", port: Int = 5432) -> Bool {
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(port).bigEndian
+        inet_pton(AF_INET, host == "localhost" ? "127.0.0.1" : host, &addr.sin_addr)
+
+        let sock = socket(AF_INET, SOCK_STREAM, 0)
+        guard sock >= 0 else { return false }
+        defer { close(sock) }
+
+        var tv = timeval(tv_sec: 1, tv_usec: 0)
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+        return withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+            }
+        }
+    }
+
+    private func withPostgresApp(_ test: (Application) async throws -> Void) async throws {
+        let host = Environment.get("DATABASE_HOST") ?? "localhost"
+        let port = Environment.get("DATABASE_PORT").flatMap(Int.init) ?? 5432
+        guard Self.isPostgresReachable(host: host, port: port) else {
+            print("PostgreSQL not reachable on \(host):\(port), skipping PostgreSQL-specific test")
+            return
+        }
+
+        setenv("TEST_USE_EXTERNAL_DB", "true", 1)
+        setenv("DB_DRIVER", "postgres", 1)
+        setenv("DATABASE_HOST", host, 1)
+        setenv("DATABASE_PORT", "\(port)", 1)
+        setenv("DATABASE_NAME", Environment.get("TEST_DATABASE_NAME") ?? "student_test_db", 1)
+        setenv("DATABASE_USER", Environment.get("DATABASE_USER") ?? "studentapp", 1)
+        setenv("DATABASE_PASSWORD", Environment.get("DATABASE_PASSWORD") ?? "local-dev-db-password-not-for-prod", 1)
+        setenv("DATABASE_TLS_MODE", "disable", 1)
+
+        let app = try await Application.make(.testing)
+        do {
+            try configure(app)
+            try await app.autoMigrate()
+            try await test(app)
+            try await app.autoRevert()
+        } catch {
+            try? await app.autoRevert()
+            try await app.asyncShutdown()
+            unsetenv("TEST_USE_EXTERNAL_DB")
+            throw error
+        }
+        unsetenv("TEST_USE_EXTERNAL_DB")
+        try await app.asyncShutdown()
+    }
+
     // MARK: - Shared Helpers
 
     /// Registers a student via the new POST /auth/signup/student endpoint.
@@ -2882,6 +2938,64 @@ struct StudentAppBackendTests {
             let unauthorizedCount = statuses.filter { $0 == .unauthorized }.count
 
             // Exactly one should succeed and one should fail
+            #expect(okCount == 1)
+            #expect(unauthorizedCount == 1)
+        }
+    }
+
+    @Test("Production database (PostgreSQL): Concurrent refresh requests with the same token result in only one successful rotation")
+    func testPostgresConcurrentRefreshRequests() async throws {
+        try await withPostgresApp { app in
+            _ = try await registerStudent(email: "pg_concurrent@example.com", on: app)
+            let loginPayload = ["email": "pg_concurrent@example.com", "password": "secret123"]
+            var refreshToken = ""
+
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    refreshToken = fullResponse.tokens?.refreshToken ?? ""
+                }
+            )
+            #expect(!refreshToken.isEmpty)
+            let tokenToRefresh = refreshToken
+
+            async let req1: HTTPStatus = {
+                var status: HTTPStatus = .internalServerError
+                try await app.testing().test(
+                    .POST, "auth/refresh",
+                    beforeRequest: { req in
+                        try req.content.encode(["refreshToken": tokenToRefresh])
+                    },
+                    afterResponse: { res async in
+                        status = res.status
+                    }
+                )
+                return status
+            }()
+
+            async let req2: HTTPStatus = {
+                var status: HTTPStatus = .internalServerError
+                try await app.testing().test(
+                    .POST, "auth/refresh",
+                    beforeRequest: { req in
+                        try req.content.encode(["refreshToken": tokenToRefresh])
+                    },
+                    afterResponse: { res async in
+                        status = res.status
+                    }
+                )
+                return status
+            }()
+
+            let statuses = try await [req1, req2]
+            let okCount = statuses.filter { $0 == .ok }.count
+            let unauthorizedCount = statuses.filter { $0 == .unauthorized }.count
+
             #expect(okCount == 1)
             #expect(unauthorizedCount == 1)
         }

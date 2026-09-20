@@ -87,6 +87,30 @@ struct RefreshTokenRow: Decodable, Sendable {
     }
 }
 
+private struct MySQLRowCountRow: Decodable, Sendable {
+    let affected_rows: Int
+
+    enum CodingKeys: String, CodingKey {
+        case affected_rows
+        case rowCount = "ROW_COUNT()"
+    }
+
+    init(from decoder: any Decoder) throws {
+        if let container = try? decoder.container(keyedBy: CodingKeys.self) {
+            if let count = try? container.decode(Int.self, forKey: .affected_rows) {
+                self.affected_rows = count
+                return
+            }
+            if let count = try? container.decode(Int.self, forKey: .rowCount) {
+                self.affected_rows = count
+                return
+            }
+        }
+        let single = try decoder.singleValueContainer()
+        self.affected_rows = (try? single.decode(Int.self)) ?? 0
+    }
+}
+
 private struct DynamicCodingKey: CodingKey {
     var stringValue: String
     var intValue: Int?
@@ -161,29 +185,74 @@ struct DatabaseRefreshTokenRepository: RefreshTokenRepository {
         let isMySQL = sql.dialect.name.lowercased().contains("mysql")
 
         if isMySQL {
-            // MySQL fallback (MySQL lacks UPDATE ... RETURNING support)
-            // Acquire row lock with SELECT ... FOR UPDATE, then conditional update
-            _ = try await sql.select()
-                .column("id")
-                .from(RefreshToken.schema)
-                .where("token_hash", .equal, tokenHash)
-                .for(.update)
-                .all()
+            // MySQL conditional UPDATE-first path:
+            // Execute atomic UPDATE with is_revoked = false and expires_at > now
+            try await sql.raw("""
+                UPDATE refresh_tokens
+                SET is_revoked = true
+                WHERE token_hash = \(bind: tokenHash)
+                  AND is_revoked = false
+                  AND expires_at > \(bind: now)
+            """).run()
 
-            guard let token = try await find(byHash: tokenHash, on: db) else {
+            // Inspect affected-row count for the preceding statement on this connection
+            let rowCountRow = try await sql.raw("SELECT ROW_COUNT() AS affected_rows")
+                .first(decoding: MySQLRowCountRow.self)
+            let affectedRows = rowCountRow?.affected_rows ?? 0
+
+            if affectedRows > 0 {
+                if let consumedRow = try await sql.raw("""
+                    SELECT id, user_id, expires_at, is_revoked
+                    FROM refresh_tokens
+                    WHERE token_hash = \(bind: tokenHash)
+                """).first(decoding: RefreshTokenRow.self) {
+                    return .consumed(
+                        RefreshToken(
+                            id: consumedRow.id,
+                            tokenHash: tokenHash,
+                            userID: consumedRow.userID,
+                            expiresAt: consumedRow.expiresAt,
+                            isRevoked: true
+                        )
+                    )
+                }
+            }
+
+            // Zero rows updated: Distinguish not found, already revoked (replay), or expired
+            let existingRow: RefreshTokenRow? = try await sql.raw("""
+                SELECT id, user_id, expires_at, is_revoked
+                FROM refresh_tokens
+                WHERE token_hash = \(bind: tokenHash)
+            """).first(decoding: RefreshTokenRow.self)
+
+            guard let existing = existingRow else {
                 return .notFound
             }
-            guard !token.isRevoked else {
-                return .alreadyRevoked(userID: token.$user.id)
+
+            if existing.isRevoked {
+                return .alreadyRevoked(userID: existing.userID)
             }
-            if token.expiresAt <= now {
-                token.isRevoked = true
-                try await update(token, on: db)
-                return .expired(token)
+
+            if existing.expiresAt <= now {
+                try await sql.raw("""
+                    UPDATE refresh_tokens
+                    SET is_revoked = true
+                    WHERE token_hash = \(bind: tokenHash)
+                      AND is_revoked = false
+                """).run()
+
+                return .expired(
+                    RefreshToken(
+                        id: existing.id,
+                        tokenHash: tokenHash,
+                        userID: existing.userID,
+                        expiresAt: existing.expiresAt,
+                        isRevoked: true
+                    )
+                )
             }
-            token.isRevoked = true
-            try await update(token, on: db)
-            return .consumed(token)
+
+            return .notFound
         }
 
         // PostgreSQL & SQLite: Atomic UPDATE-first in one statement with RETURNING
@@ -254,6 +323,14 @@ struct DatabaseRefreshTokenRepository: RefreshTokenRepository {
     }
 
     func revokeAll(forUserID userID: UUID, on db: any Database) async throws {
+        if let sql = db as? (any SQLDatabase) {
+            _ = try? await sql.select()
+                .column("id")
+                .from("students")
+                .where("id", .equal, userID)
+                .for(.update)
+                .all()
+        }
         try await RefreshToken.query(on: db)
             .filter(\.$user.$id == userID)
             .set(\.$isRevoked, to: true)
