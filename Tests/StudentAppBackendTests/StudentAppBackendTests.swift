@@ -1724,6 +1724,308 @@ struct StudentAppBackendTests {
         }
     }
 
+    // MARK: =========================================================
+    // MARK: - Password Reset Security Tests (P0)
+    // MARK: =========================================================
+
+    actor MockEmailCapturingService: EmailSending {
+        private var _lastBody: String?
+        private var _lastCode: String?
+
+        var lastCode: String? {
+            _lastCode
+        }
+
+        func send(to email: String, subject: String, body: String) async throws {
+            self._lastBody = body
+            if let range = body.range(of: "Your verification code is: ") {
+                let codePart = body[range.upperBound...].prefix(6)
+                self._lastCode = String(codePart)
+            }
+        }
+    }
+
+    @Test("Password Reset Security: OTP and session tokens are never stored in plaintext")
+    func testPasswordResetPlaintextNotStored() async throws {
+        try await withApp { app in
+            let mockEmail = MockEmailCapturingService()
+            app.emailService = mockEmail
+
+            // 1. Create a student
+            let email = "security_user@example.com"
+            let signupPayload = [
+                "name": "Security User",
+                "email": email,
+                "password": "Password123!",
+                "role": "student"
+            ]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(signupPayload)
+            })
+
+            // 2. Request forgot-password
+            try await app.testing().test(.POST, "auth/forgot-password", beforeRequest: { req in
+                try req.content.encode(["email": email])
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+            })
+
+            guard let capturedCode = await mockEmail.lastCode else {
+                Issue.record("Failed to capture OTP code from email service")
+                return
+            }
+            #expect(capturedCode.count == 6)
+
+            // 3. Inspect database: Confirm code is hashed and raw code is NOT stored
+            let resetTokenRow = try await PasswordResetToken.query(on: app.db)
+                .filter(\.$email == email)
+                .first()
+            #expect(resetTokenRow != nil)
+            #expect(resetTokenRow?.codeHash != capturedCode) // Must NOT be plaintext
+            let expectedHash = PasswordResetSecurity.hashOTP(capturedCode, email: email)
+            #expect(resetTokenRow?.codeHash == expectedHash)
+
+            // 4. Verify code and receive session token
+            var returnedSessionToken: String?
+            try await app.testing().test(.POST, "auth/verify-reset-code", beforeRequest: { req in
+                try req.content.encode(["email": email, "code": capturedCode])
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(VerifyResetCodeResponse.self)
+                #expect(body.success == true)
+                returnedSessionToken = body.sessionToken
+            })
+
+            guard let rawSessionToken = returnedSessionToken else {
+                Issue.record("Failed to receive sessionToken")
+                return
+            }
+            #expect(rawSessionToken.count >= 32)
+
+            // 5. Inspect database: Confirm session token is stored hashed and NOT plaintext
+            let verifiedTokenRow = try await PasswordResetToken.query(on: app.db)
+                .filter(\.$email == email)
+                .first()
+            #expect(verifiedTokenRow?.verified == true)
+            #expect(verifiedTokenRow?.sessionTokenHash != rawSessionToken)
+            let expectedSessionHash = PasswordResetSecurity.hashSessionToken(rawSessionToken)
+            #expect(verifiedTokenRow?.sessionTokenHash == expectedSessionHash)
+        }
+    }
+
+    @Test("Password Reset Security: Requesting a new code invalidates prior reset tokens")
+    func testPasswordResetInvalidatesPriorTokens() async throws {
+        try await withApp { app in
+            let mockEmail = MockEmailCapturingService()
+            app.emailService = mockEmail
+
+            let email = "invalidate_user@example.com"
+            let signupPayload = [
+                "name": "Invalidate User",
+                "email": email,
+                "password": "Password123!",
+                "role": "student"
+            ]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(signupPayload)
+            })
+
+            // 1. Request first code
+            try await app.testing().test(.POST, "auth/forgot-password", beforeRequest: { req in
+                try req.content.encode(["email": email])
+            })
+            guard let firstCode = await mockEmail.lastCode else {
+                Issue.record("No first code captured")
+                return
+            }
+
+            // 2. Request second code
+            try await app.testing().test(.POST, "auth/forgot-password", beforeRequest: { req in
+                try req.content.encode(["email": email])
+            })
+            guard let secondCode = await mockEmail.lastCode else {
+                Issue.record("No second code captured")
+                return
+            }
+
+            // 3. Attempting to verify the first code must fail because it was invalidated
+            try await app.testing().test(.POST, "auth/verify-reset-code", beforeRequest: { req in
+                try req.content.encode(["email": email, "code": firstCode])
+            }, afterResponse: { res async throws in
+                let body = try res.content.decode(VerifyResetCodeResponse.self)
+                #expect(body.success == false)
+            })
+
+            // 4. Verifying the second code must succeed
+            try await app.testing().test(.POST, "auth/verify-reset-code", beforeRequest: { req in
+                try req.content.encode(["email": email, "code": secondCode])
+            }, afterResponse: { res async throws in
+                let body = try res.content.decode(VerifyResetCodeResponse.self)
+                #expect(body.success == true)
+                #expect(body.sessionToken != nil)
+            })
+        }
+    }
+
+    @Test("Password Reset Security: 3 failed attempts invalidates the reset token")
+    func testPasswordResetMaxAttemptsEnforced() async throws {
+        try await withApp { app in
+            let mockEmail = MockEmailCapturingService()
+            app.emailService = mockEmail
+
+            let email = "attempts_user@example.com"
+            let signupPayload = [
+                "name": "Attempts User",
+                "email": email,
+                "password": "Password123!",
+                "role": "student"
+            ]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(signupPayload)
+            })
+
+            try await app.testing().test(.POST, "auth/forgot-password", beforeRequest: { req in
+                try req.content.encode(["email": email])
+            })
+            guard let correctCode = await mockEmail.lastCode else {
+                Issue.record("No code captured")
+                return
+            }
+
+            // Attempt 1: wrong code
+            try await app.testing().test(.POST, "auth/verify-reset-code", beforeRequest: { req in
+                try req.content.encode(["email": email, "code": "000000"])
+            }, afterResponse: { res async throws in
+                let body = try res.content.decode(VerifyResetCodeResponse.self)
+                #expect(body.success == false)
+                #expect(body.message.contains("Invalid code"))
+            })
+
+            // Attempt 2: wrong code
+            try await app.testing().test(.POST, "auth/verify-reset-code", beforeRequest: { req in
+                try req.content.encode(["email": email, "code": "000001"])
+            }, afterResponse: { res async throws in
+                let body = try res.content.decode(VerifyResetCodeResponse.self)
+                #expect(body.success == false)
+                #expect(body.message.contains("Invalid code"))
+            })
+
+            // Attempt 3: wrong code -> locks
+            try await app.testing().test(.POST, "auth/verify-reset-code", beforeRequest: { req in
+                try req.content.encode(["email": email, "code": "000002"])
+            }, afterResponse: { res async throws in
+                let body = try res.content.decode(VerifyResetCodeResponse.self)
+                #expect(body.success == false)
+                #expect(body.message.contains("Too many failed attempts"))
+            })
+
+            // Confirm database record is permanently marked used = true with attempts = 3
+            let tokenInDb = try await PasswordResetToken.query(on: app.db)
+                .filter(\.$email == email)
+                .first()
+            #expect(tokenInDb != nil)
+            #expect(tokenInDb?.attempts == 3)
+            #expect(tokenInDb?.used == true, "Token must be invalidated after 3 failed attempts")
+        }
+    }
+
+    @Test("Password Reset Transactional: Concurrent reset requests with same session token result in exactly one success")
+    func testPasswordResetConcurrentRequests() async throws {
+        try await withApp { app in
+            let mockEmail = MockEmailCapturingService()
+            app.emailService = mockEmail
+
+            let email = "concurrent_reset@example.com"
+            let initialPassword = "InitialPassword123!"
+            let signupPayload = [
+                "name": "Concurrent Reset User",
+                "email": email,
+                "password": initialPassword,
+                "role": "student"
+            ]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(signupPayload)
+            })
+
+            // Log in to acquire a refresh token
+            var activeRefreshToken: String?
+            try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
+                try req.content.encode(["email": email, "password": initialPassword])
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(FullLoginResponseTest.self)
+                activeRefreshToken = body.tokens?.refreshToken
+            })
+            guard let initialRefreshToken = activeRefreshToken else {
+                Issue.record("No initial refresh token obtained")
+                return
+            }
+
+            // Request forgot password and verify
+            try await app.testing().test(.POST, "auth/forgot-password", beforeRequest: { req in
+                try req.content.encode(["email": email])
+            })
+            guard let otpCode = await mockEmail.lastCode else {
+                Issue.record("No code captured")
+                return
+            }
+
+            var verifiedSessionToken: String?
+            try await app.testing().test(.POST, "auth/verify-reset-code", beforeRequest: { req in
+                try req.content.encode(["email": email, "code": otpCode])
+            }, afterResponse: { res async throws in
+                let body = try res.content.decode(VerifyResetCodeResponse.self)
+                verifiedSessionToken = body.sessionToken
+            })
+            guard let sessionToken = verifiedSessionToken else {
+                Issue.record("No session token obtained")
+                return
+            }
+
+            // Execute concurrent resetPassword requests with the same session token
+            let concurrency = 5
+            let results = await withTaskGroup(of: HTTPStatus.self, returning: [HTTPStatus].self) { group in
+                for i in 0..<concurrency {
+                    group.addTask {
+                        var status: HTTPStatus = .internalServerError
+                        do {
+                            try await app.testing().test(.POST, "auth/reset-password", beforeRequest: { req in
+                                try req.content.encode([
+                                    "email": email,
+                                    "sessionToken": sessionToken,
+                                    "newPassword": "NewPassword\(i)123!",
+                                    "confirmPassword": "NewPassword\(i)123!"
+                                ])
+                            }, afterResponse: { res async in
+                                status = res.status
+                            })
+                        } catch {
+                            status = .internalServerError
+                        }
+                        return status
+                    }
+                }
+                var list: [HTTPStatus] = []
+                for await s in group {
+                    list.append(s)
+                }
+                return list
+            }
+
+            let successCount = results.filter { $0 == .ok }.count
+            let badRequestCount = results.filter { $0 == .badRequest }.count
+            #expect(successCount == 1, "Exactly one reset request must succeed")
+            #expect(badRequestCount == concurrency - 1, "All duplicate concurrent attempts must fail with 400 Bad Request")
+
+            // Verify that all active refresh tokens for this student were revoked as part of the reset transaction
+            try await app.testing().test(.POST, "auth/refresh", beforeRequest: { req in
+                try req.content.encode(["refreshToken": initialRefreshToken])
+            }, afterResponse: { res async in
+                #expect(res.status == .unauthorized, "Refresh token must be revoked after password reset")
+            })
+        }
+    }
+
     // MARK: - TLS and Cipher Suite Tests
 
     @Test("TLS: Default minimum TLS version is TLS 1.2")

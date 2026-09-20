@@ -223,6 +223,7 @@ private func configureMigrations(_ app: Application) throws {
     // Phase 2: Role, status, firstName, lastName, countryCode, contactNumber (E.164), timestamps
     app.migrations.add(AddRoleStatusPhoneToStudents())
     app.migrations.add(CreateRefreshToken())
+    app.migrations.add(HardenPasswordResetTokens())
 
     if AppConfig.shouldAutoMigrate(in: app.environment) {
         app.logger.notice("AUTO_MIGRATE enabled — running migrations on startup")
