@@ -201,6 +201,7 @@ private func configureMiddleware(_ app: Application) throws {
 private func configureJWT(_ app: Application) throws {
     let jwtSecret = try AppConfig.loadJWTSecret(for: app.environment)
     app.jwt.signers.use(.hs256(key: jwtSecret.data(using: .utf8)!))
+    _ = try AppConfig.loadPasswordResetSecret(for: app.environment)
 }
 
 private func configureEmail(_ app: Application) {

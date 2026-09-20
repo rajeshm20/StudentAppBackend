@@ -184,7 +184,8 @@ struct AuthController: RouteCollection {
 
         // Cryptographically secure random 6-digit OTP (CSPRNG with rejection sampling)
         let code = PasswordResetSecurity.generateSecureOTP()
-        let codeHash = PasswordResetSecurity.hashOTP(code, email: normalizedEmail)
+        let secret = try AppConfig.loadPasswordResetSecret(for: req.application.environment)
+        let codeHash = PasswordResetSecurity.hashOTP(code, email: normalizedEmail, secret: secret)
 
         let resetToken = PasswordResetToken(
             email: student.email,
@@ -217,45 +218,47 @@ struct AuthController: RouteCollection {
     func verifyResetCode(_ req: Request) async throws -> VerifyResetCodeResponse {
         let request = try req.content.decode(VerifyResetCodeRequest.self)
         let normalizedEmail = request.email.lowercased().trimmingCharacters(in: .whitespaces)
+        let secret = try AppConfig.loadPasswordResetSecret(for: req.application.environment)
 
-        guard let resetToken = try await passwordResetRepository.findLatestActiveCode(forEmail: normalizedEmail, on: req.db) else {
-            return VerifyResetCodeResponse(success: false, message: "Invalid or expired code.", sessionToken: nil)
+        let outcome = try await passwordResetRepository.verifyOTPAndCreateSession(
+            email: normalizedEmail,
+            code: request.code,
+            secret: secret,
+            on: req.db
+        )
+
+        switch outcome {
+        case .success(let sessionToken):
+            return VerifyResetCodeResponse(
+                success: true,
+                message: "Code verified.",
+                sessionToken: sessionToken
+            )
+        case .invalidOrExpiredCode:
+            return VerifyResetCodeResponse(
+                success: false,
+                message: "Invalid or expired code.",
+                sessionToken: nil
+            )
+        case .expired:
+            return VerifyResetCodeResponse(
+                success: false,
+                message: "Code has expired. Please request a new one.",
+                sessionToken: nil
+            )
+        case .tooManyAttempts:
+            return VerifyResetCodeResponse(
+                success: false,
+                message: "Too many failed attempts. Please request a new code.",
+                sessionToken: nil
+            )
+        case .invalidCode:
+            return VerifyResetCodeResponse(
+                success: false,
+                message: "Invalid code.",
+                sessionToken: nil
+            )
         }
-
-        if resetToken.attempts >= 3 {
-            resetToken.used = true
-            try await passwordResetRepository.update(resetToken, on: req.db)
-            return VerifyResetCodeResponse(success: false, message: "Too many failed attempts. Please request a new code.", sessionToken: nil)
-        }
-
-        guard resetToken.codeExpiresAt > Date() else {
-            return VerifyResetCodeResponse(success: false, message: "Code has expired. Please request a new one.", sessionToken: nil)
-        }
-
-        // Verify candidate code against stored HMAC-SHA256 hash using constant-time comparison
-        let candidateHash = PasswordResetSecurity.hashOTP(request.code, email: normalizedEmail)
-        guard PasswordResetSecurity.constantTimeCompare(candidateHash, resetToken.codeHash) else {
-            resetToken.attempts += 1
-            if resetToken.attempts >= 3 {
-                resetToken.used = true
-            }
-            try await passwordResetRepository.update(resetToken, on: req.db)
-            if resetToken.attempts >= 3 {
-                return VerifyResetCodeResponse(success: false, message: "Too many failed attempts. Please request a new code.", sessionToken: nil)
-            }
-            return VerifyResetCodeResponse(success: false, message: "Invalid code.", sessionToken: nil)
-        }
-
-        // Generate 256-bit cryptographically secure session token; persist only its SHA-256 hash
-        let rawSessionToken = PasswordResetSecurity.generateSecureSessionToken()
-        let sessionTokenHash = PasswordResetSecurity.hashSessionToken(rawSessionToken)
-
-        resetToken.verified = true
-        resetToken.sessionTokenHash = sessionTokenHash
-        resetToken.sessionExpiresAt = Date().addingTimeInterval(15 * 60)
-        try await passwordResetRepository.update(resetToken, on: req.db)
-
-        return VerifyResetCodeResponse(success: true, message: "Code verified.", sessionToken: rawSessionToken)
     }
 
     // MARK: - Reset Password

@@ -27,16 +27,17 @@ public enum PasswordResetSecurity {
 
     /// Default application secret key for HMAC hashing
     public static func resetSecret() -> String {
-        Environment.get("JWT_SECRET") ?? "studentapp-reset-secret-salt-min-32-chars"
+        (try? AppConfig.loadPasswordResetSecret(for: .testing)) ?? "studentapp-reset-secret-salt-min-32-chars"
     }
 
     /// Hashes the 6-digit OTP using HMAC-SHA256 keyed with the application secret
     /// and bound to the normalized user email. This prevents rainbow-table precomputations
     /// on low-entropy numeric codes if a database snapshot is leaked.
-    public static func hashOTP(_ code: String, email: String, secret: String = resetSecret()) -> String {
+    public static func hashOTP(_ code: String, email: String, secret: String? = nil) -> String {
         let normalizedEmail = email.lowercased().trimmingCharacters(in: .whitespaces)
         let message = "\(code):\(normalizedEmail)"
-        let key = SymmetricKey(data: Data(secret.utf8))
+        let effectiveSecret = secret ?? resetSecret()
+        let key = SymmetricKey(data: Data(effectiveSecret.utf8))
         let hmac = HMAC<SHA256>.authenticationCode(for: Data(message.utf8), using: key)
         return hmac.compactMap { String(format: "%02x", $0) }.joined()
     }

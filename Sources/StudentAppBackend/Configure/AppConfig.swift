@@ -17,26 +17,26 @@ enum AppConfig {
     static let defaultSecureCipherSuites: String = [
         "ECDHE-ECDSA-AES128-GCM-SHA256",
         "ECDHE-RSA-AES128-GCM-SHA256",
-        "ECDHE-ECDSA-AES256-GCM-SHA384",
-        "ECDHE-RSA-AES256-GCM-SHA384",
-        "ECDHE-ECDSA-CHACHA20-POLY1305",
-        "ECDHE-RSA-CHACHA20-POLY1305",
-    ].joined(separator: ":")
+            "ECDHE-ECDSA-AES256-GCM-SHA384",
+            "ECDHE-RSA-AES256-GCM-SHA384",
+            "ECDHE-ECDSA-CHACHA20-POLY1305",
+            "ECDHE-RSA-CHACHA20-POLY1305",
+        ].joined(separator: ":")
 
-    static func jwtAccessTTL() -> TimeInterval {
-        guard let raw = Environment.get("JWT_ACCESS_TTL"), let seconds = TimeInterval(raw),
-            seconds > 0
-        else {
-            return defaultJWTAccessTTL
+        static func jwtAccessTTL() -> TimeInterval {
+            guard let raw = Environment.get("JWT_ACCESS_TTL"), let seconds = TimeInterval(raw),
+                seconds > 0
+            else {
+                return defaultJWTAccessTTL
+            }
+            return seconds
         }
-        return seconds
-    }
 
-    static let defaultJWTRefreshTTL: TimeInterval = 604800 // 7 days
+        static let defaultJWTRefreshTTL: TimeInterval = 604800 // 7 days
 
-    static func jwtRefreshTTL() -> TimeInterval {
-        guard let raw = Environment.get("JWT_REFRESH_TTL"), let seconds = TimeInterval(raw),
-            seconds > 0
+        static func jwtRefreshTTL() -> TimeInterval {
+            guard let raw = Environment.get("JWT_REFRESH_TTL"), let seconds = TimeInterval(raw),
+                seconds > 0
         else {
             return defaultJWTRefreshTTL
         }
@@ -53,13 +53,41 @@ enum AppConfig {
                 )
             }
             return secret
-        }
+        }   
 
         if environment == .testing {
             return "test-jwt-secret-at-least-32-characters-long"
         }
 
         throw Abort(.internalServerError, reason: "JWT_SECRET environment variable is required")
+    }
+
+    static let minimumPasswordResetSecretLength = 32
+
+    static func loadPasswordResetSecret(for environment: Environment) throws -> String {
+        if let secret = Environment.get("PASSWORD_RESET_HMAC_SECRET"), !secret.isEmpty {
+            if environment == .production && secret.count < minimumPasswordResetSecretLength {
+                throw Abort(
+                    .internalServerError,
+                    reason:
+                        "PASSWORD_RESET_HMAC_SECRET must be at least \(minimumPasswordResetSecretLength) characters in production"
+                )
+            }
+            return secret
+        }
+
+        if environment == .production {
+            throw Abort(
+                .internalServerError,
+                reason: "PASSWORD_RESET_HMAC_SECRET environment variable is required in production"
+            )
+        }
+
+        if environment == .testing || environment == .development {
+            return "studentapp-reset-secret-salt-min-32-chars"
+        }
+
+        return "studentapp-reset-secret-salt-min-32-chars"
     }
 
     static func shouldAutoMigrate(in environment: Environment) -> Bool {

@@ -41,7 +41,9 @@ final class RateLimiterMiddleware: AsyncMiddleware {
     private let store = RateLimiterStore()
 
     func respond(to request: Request, chainingTo next: any AsyncResponder) async throws -> Response {
-        let ip = request.remoteAddress?.ipAddress ?? "unknown"
+        let ip = request.headers.first(name: "X-Forwarded-For")?.components(separatedBy: ",").first?.trimmingCharacters(in: .whitespaces)
+            ?? request.remoteAddress?.ipAddress
+            ?? "unknown"
         let route = request.url.path
 
         // 🎯 Different rules depending on endpoint

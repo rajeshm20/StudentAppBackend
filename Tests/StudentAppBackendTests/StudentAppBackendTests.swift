@@ -2026,6 +2026,159 @@ struct StudentAppBackendTests {
         }
     }
 
+    // MARK: - Password Reset Hardening & Concurrency Tests
+
+    @Test("Password Reset Security: Dedicated HMAC secret validation in production and non-production")
+    func testPasswordResetSecretConfiguration() throws {
+        unsetenv("PASSWORD_RESET_HMAC_SECRET")
+
+        // 1. Missing secret in production must fail startup / validation
+        #expect(throws: Abort.self) {
+            try AppConfig.loadPasswordResetSecret(for: .production)
+        }
+
+        // 2. Secret shorter than 32 characters in production must fail
+        setenv("PASSWORD_RESET_HMAC_SECRET", "short-secret", 1)
+        #expect(throws: Abort.self) {
+            try AppConfig.loadPasswordResetSecret(for: .production)
+        }
+
+        // 3. Valid secret (>= 32 characters) in production succeeds
+        setenv("PASSWORD_RESET_HMAC_SECRET", "a-sufficiently-long-secret-key-32-chars-long", 1)
+        let prodSecret = try AppConfig.loadPasswordResetSecret(for: .production)
+        #expect(prodSecret == "a-sufficiently-long-secret-key-32-chars-long")
+
+        // 4. In testing, fallback succeeds even without environment variable
+        unsetenv("PASSWORD_RESET_HMAC_SECRET")
+        let testSecret = try AppConfig.loadPasswordResetSecret(for: .testing)
+        #expect(!testSecret.isEmpty)
+        #expect(testSecret.count >= 32)
+    }
+
+    @Test("Password Reset Migration: Legacy plaintext columns are dropped and existing tokens invalidated")
+    func testPasswordResetMigrationDropsLegacyColumnsAndInvalidatesRows() async throws {
+        try await withApp { app in
+            guard let sql = app.db as? any SQLDatabase else {
+                Issue.record("Test requires SQLDatabase")
+                return
+            }
+
+            // Create a legacy table with old plaintext schema
+            try await sql.raw("DROP TABLE IF EXISTS legacy_password_reset_tokens;").run()
+            try await sql.raw("""
+                CREATE TABLE legacy_password_reset_tokens (
+                    id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    sessionToken TEXT,
+                    codeExpiresAt TEXT NOT NULL,
+                    sessionExpiresAt TEXT,
+                    verified INTEGER NOT NULL DEFAULT 0,
+                    used INTEGER NOT NULL DEFAULT 0,
+                    attempts INTEGER NOT NULL DEFAULT 0
+                );
+            """).run()
+
+            // Insert a legacy record with plaintext secrets
+            let legacyId = UUID().uuidString
+            let legacyEmail = "legacy_user@example.com"
+            try await sql.raw("""
+                INSERT INTO legacy_password_reset_tokens (id, email, code, sessionToken, codeExpiresAt, verified, used, attempts)
+                VALUES (\(bind: legacyId), \(bind: legacyEmail), '123456', 'plaintext-session-token', '2030-01-01T00:00:00Z', 0, 0, 0);
+            """).run()
+
+            // Rename to password_reset_tokens for migration testing
+            try await sql.raw("DROP TABLE IF EXISTS password_reset_tokens;").run()
+            try await sql.raw("ALTER TABLE legacy_password_reset_tokens RENAME TO password_reset_tokens;").run()
+
+            // Run HardenPasswordResetTokens migration
+            try await HardenPasswordResetTokens().prepare(on: app.db)
+
+            // Inspect columns via PRAGMA table_info
+            struct ColInfo: Decodable {
+                let name: String
+            }
+            let cols = try await sql.raw("PRAGMA table_info(password_reset_tokens);").all(decoding: ColInfo.self)
+            let colNames = Set(cols.map { $0.name })
+
+            // Legacy plaintext columns must be gone
+            #expect(!colNames.contains("code"), "Legacy 'code' column must be dropped")
+            #expect(!colNames.contains("sessionToken"), "Legacy 'sessionToken' column must be dropped")
+            #expect(!colNames.contains("codeExpiresAt"), "Legacy 'codeExpiresAt' column must be dropped")
+            #expect(!colNames.contains("sessionExpiresAt"), "Legacy 'sessionExpiresAt' column must be dropped")
+
+            // New hardened columns must be present
+            #expect(colNames.contains("code_hash"), "'code_hash' column must exist")
+            #expect(colNames.contains("session_token_hash"), "'session_token_hash' column must exist")
+            #expect(colNames.contains("code_expires_at"), "'code_expires_at' column must exist")
+            #expect(colNames.contains("session_expires_at"), "'session_expires_at' column must exist")
+
+            // Existing rows must be invalidated (used = true / 1)
+            struct TokenRow: Decodable {
+                let used: Int
+            }
+            let row = try await sql.raw("SELECT used FROM password_reset_tokens WHERE id = \(bind: legacyId);").first(decoding: TokenRow.self)
+            #expect(row?.used == 1, "Legacy token rows must be invalidated on migration")
+        }
+    }
+
+    @Test("Password Reset Security: Concurrent OTP verification requests result in exactly one successful session")
+    func testPasswordResetConcurrentOTPVerification() async throws {
+        try await withApp { app in
+            let mockEmail = MockEmailCapturingService()
+            app.emailService = mockEmail
+
+            let email = "concurrent_otp@example.com"
+            let signupPayload = [
+                "name": "Concurrent OTP User",
+                "email": email,
+                "password": "Password123!",
+                "role": "student"
+            ]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(signupPayload)
+            })
+
+            // Request OTP code
+            try await app.testing().test(.POST, "auth/forgot-password", beforeRequest: { req in
+                try req.content.encode(["email": email])
+            })
+            guard let otpCode = await mockEmail.lastCode else {
+                Issue.record("No OTP code captured")
+                return
+            }
+
+            // Launch 5 concurrent verification attempts with the correct OTP
+            let concurrency = 5
+            let results: [VerifyResetCodeResponse] = try await withThrowingTaskGroup(of: VerifyResetCodeResponse.self) { group in
+                for i in 0..<concurrency {
+                    group.addTask {
+                        var response: VerifyResetCodeResponse?
+                        try await app.testing().test(.POST, "auth/verify-reset-code", beforeRequest: { req in
+                            req.headers.replaceOrAdd(name: "X-Forwarded-For", value: "10.0.0.\(i + 1)")
+                            try req.content.encode(["email": email, "code": otpCode])
+                        }, afterResponse: { res async throws in
+                            #expect(res.status == .ok)
+                            response = try res.content.decode(VerifyResetCodeResponse.self)
+                        })
+                        return response ?? VerifyResetCodeResponse(success: false, message: "No response", sessionToken: nil)
+                    }
+                }
+
+                var list = [VerifyResetCodeResponse]()
+                for try await r in group {
+                    list.append(r)
+                }
+                return list
+            }
+
+            let successCount = results.filter { $0.success == true }.count
+            let failCount = results.filter { $0.success == false }.count
+            #expect(successCount == 1, "Exactly one concurrent verification request must succeed and receive a session token")
+            #expect(failCount == concurrency - 1, "All duplicate concurrent verification requests must fail")
+        }
+    }
+
     // MARK: - TLS and Cipher Suite Tests
 
     @Test("TLS: Default minimum TLS version is TLS 1.2")
