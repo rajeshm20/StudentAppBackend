@@ -162,6 +162,15 @@ private func configureDatabase(_ app: Application) throws {
 }
 
 private func configureMiddleware(_ app: Application) throws {
+    // Configure log level: reads LOG_LEVEL env var (e.g. debug, info, notice, warning, error),
+    // defaulting to .info in development/testing and .notice in production.
+    if let logLevelStr = Environment.get("LOG_LEVEL")?.lowercased(),
+       let level = Logger.Level(rawValue: logLevelStr) {
+        app.logger.logLevel = level
+    } else {
+        app.logger.logLevel = app.environment == .production ? .notice : .info
+    }
+
     let corsConfig = CORSMiddleware.Configuration(
         allowedOrigin: try AppConfig.corsAllowedOrigin(for: app.environment),
         allowedMethods: [.GET, .POST, .PUT, .DELETE, .OPTIONS],
@@ -171,11 +180,21 @@ private func configureMiddleware(_ app: Application) throws {
 
     // Reset default middleware to replace Vapor's default ErrorMiddleware with UnifiedErrorMiddleware
     app.middleware = .init()
-    // Register SecurityHeadersMiddleware as the outermost middleware so that all responses—
-    // including error responses (4xx, 5xx)—consistently receive security headers and HSTS when over HTTPS.
+
+    // 1. RequestLoggingMiddleware: Outermost middleware logs every incoming request from mobile/web clients
+    // and outgoing responses with latency, HTTP status code, client IP, and User-Agent.
+    app.middleware.use(RequestLoggingMiddleware())
+
+    // 2. SecurityHeadersMiddleware: Sets security headers on all responses (including errors and HTTPS HSTS).
     app.middleware.use(SecurityHeadersMiddleware(environment: app.environment))
+
+    // 3. UnifiedErrorMiddleware: Formats all 4xx/5xx responses into the standardized error envelope.
     app.middleware.use(UnifiedErrorMiddleware(environment: app.environment))
+
+    // 4. CORSMiddleware: Strict origin validation.
     app.middleware.use(CORSMiddleware(configuration: corsConfig))
+
+    // 5. RateLimiterMiddleware: Throttles bursts and brute-force attempts.
     app.middleware.use(RateLimiterMiddleware())
 }
 
