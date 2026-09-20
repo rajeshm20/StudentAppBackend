@@ -32,6 +32,17 @@ enum AppConfig {
         return seconds
     }
 
+    static let defaultJWTRefreshTTL: TimeInterval = 604800 // 7 days
+
+    static func jwtRefreshTTL() -> TimeInterval {
+        guard let raw = Environment.get("JWT_REFRESH_TTL"), let seconds = TimeInterval(raw),
+            seconds > 0
+        else {
+            return defaultJWTRefreshTTL
+        }
+        return seconds
+    }
+
     static func loadJWTSecret(for environment: Environment) throws -> String {
         if let secret = Environment.get("JWT_SECRET"), !secret.isEmpty {
             if environment == .production && secret.count < minimumJWTSecretLength {

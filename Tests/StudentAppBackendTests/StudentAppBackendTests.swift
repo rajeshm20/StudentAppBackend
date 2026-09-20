@@ -4,7 +4,9 @@
 // Tests are serialized to prevent race conditions on shared test state.
 
 import Fluent
+import FluentPostgresDriver
 import NIOSSL
+import SQLKit
 import Testing
 import Vapor
 import VaporTesting
@@ -31,6 +33,127 @@ struct StudentAppBackendTests {
             try await app.asyncShutdown()
             throw error
         }
+        try await app.asyncShutdown()
+    }
+
+    // MARK: - Production Database (PostgreSQL) Test Harness
+
+    private static func isPostgresReachable(
+        host: String,
+        port: Int,
+        user: String,
+        password: String,
+        database: String
+    ) async -> Bool {
+        guard let app = try? await Application.make(.testing) else { return false }
+        let config = SQLPostgresConfiguration(
+            hostname: host,
+            port: port,
+            username: user,
+            password: password,
+            database: database,
+            tls: .disable
+        )
+        app.databases.use(.postgres(configuration: config, maxConnectionsPerEventLoop: 1), as: .psql, isDefault: true)
+        let reachable: Bool
+        do {
+            if let sql = app.db as? any SQLDatabase {
+                try await sql.raw("SELECT 1").run()
+                reachable = true
+            } else {
+                reachable = false
+            }
+        } catch {
+            reachable = false
+        }
+        try? await app.asyncShutdown()
+        return reachable
+    }
+
+    private func withPostgresApp(_ test: (Application) async throws -> Void) async throws {
+        let host = Environment.get("DATABASE_HOST") ?? "localhost"
+        let port = Environment.get("DATABASE_PORT").flatMap(Int.init) ?? 5432
+        let dbName = Environment.get("TEST_DATABASE_NAME") ?? Environment.get("DATABASE_NAME") ?? "student_db"
+        let user = Environment.get("DATABASE_USER") ?? "studentapp"
+        let password = Environment.get("DATABASE_PASSWORD") ?? "local-dev-db-password-not-for-prod"
+
+        let isReachable = await Self.isPostgresReachable(
+            host: host,
+            port: port,
+            user: user,
+            password: password,
+            database: dbName
+        )
+
+        let isCI = Environment.get("CI") != nil || Environment.get("GITHUB_ACTIONS") != nil || Environment.get("TEST_USE_EXTERNAL_DB") == "true"
+        if !isReachable {
+            if isCI {
+                Issue.record("PostgreSQL database is required in CI on \(host):\(port)/\(dbName) but could not be reached.")
+            } else {
+                print("PostgreSQL not reachable on \(host):\(port)/\(dbName), skipping PostgreSQL concurrency test locally.")
+            }
+            return
+        }
+
+        setenv("TEST_USE_EXTERNAL_DB", "true", 1)
+        setenv("DB_DRIVER", "postgres", 1)
+        setenv("DATABASE_HOST", host, 1)
+        setenv("DATABASE_PORT", "\(port)", 1)
+        setenv("DATABASE_NAME", dbName, 1)
+        setenv("DATABASE_USER", user, 1)
+        setenv("DATABASE_PASSWORD", password, 1)
+        setenv("DATABASE_TLS_MODE", "disable", 1)
+
+        let app = try await Application.make(.testing)
+        do {
+            try configure(app)
+            try await app.autoMigrate()
+            try await test(app)
+            try await app.autoRevert()
+        } catch {
+            try? await app.autoRevert()
+            try await app.asyncShutdown()
+            unsetenv("TEST_USE_EXTERNAL_DB")
+            throw error
+        }
+        unsetenv("TEST_USE_EXTERNAL_DB")
+        try await app.asyncShutdown()
+    }
+
+    // MARK: - Production Database (MySQL) Test Harness
+
+    private func withMySQLApp(_ test: (Application) async throws -> Void) async throws {
+        guard let host = Environment.get("MYSQL_HOST"), !host.isEmpty else {
+            print("MYSQL_HOST not set, skipping MySQL concurrency test.")
+            return
+        }
+        let port = Environment.get("MYSQL_PORT").flatMap(Int.init) ?? 3306
+        let dbName = Environment.get("MYSQL_DATABASE") ?? "student_db"
+        let user = Environment.get("MYSQL_USER") ?? "root"
+        let password = Environment.get("MYSQL_PASSWORD") ?? ""
+
+        setenv("TEST_USE_EXTERNAL_DB", "true", 1)
+        setenv("DB_DRIVER", "mysql", 1)
+        setenv("DATABASE_HOST", host, 1)
+        setenv("DATABASE_PORT", "\(port)", 1)
+        setenv("DATABASE_NAME", dbName, 1)
+        setenv("DATABASE_USER", user, 1)
+        setenv("DATABASE_PASSWORD", password, 1)
+        setenv("DATABASE_TLS_MODE", "disable", 1)
+
+        let app = try await Application.make(.testing)
+        do {
+            try configure(app)
+            try await app.autoMigrate()
+            try await test(app)
+            try await app.autoRevert()
+        } catch {
+            try? await app.autoRevert()
+            try await app.asyncShutdown()
+            unsetenv("TEST_USE_EXTERNAL_DB")
+            throw error
+        }
+        unsetenv("TEST_USE_EXTERNAL_DB")
         try await app.asyncShutdown()
     }
 
@@ -2543,6 +2666,658 @@ struct StudentAppBackendTests {
         #expect(certText.contains("127.0.0.1"))
         #expect(certText.contains("0:0:0:0:0:0:0:1") || certText.contains("::1"))
     }
+
+    // MARK: - Refresh Token & Dual Token Rotation Tests
+
+    @Test("Login returns dual token pair (access + refresh token)")
+    func testLoginReturnsTokenPair() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "tokenpair@example.com", on: app)
+            let loginPayload = ["email": "tokenpair@example.com", "password": "secret123"]
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    #expect(!fullResponse.token.token.isEmpty)
+                    guard let tokens = fullResponse.tokens else {
+                        Issue.record("Expected tokens field in login response")
+                        return
+                    }
+                    #expect(!tokens.accessToken.isEmpty)
+                    #expect(tokens.refreshToken.count == 64)
+                    #expect(tokens.tokenType == "Bearer")
+                    #expect(tokens.expiresIn > 0)
+                }
+            )
+        }
+    }
+
+    @Test("Refresh token rotation: valid refresh token issues new pair and revokes old")
+    func testRefreshTokenRotationSuccess() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "refresh1@example.com", on: app)
+            let loginPayload = ["email": "refresh1@example.com", "password": "secret123"]
+            var initialRefreshToken = ""
+
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    initialRefreshToken = fullResponse.tokens?.refreshToken ?? ""
+                }
+            )
+            #expect(!initialRefreshToken.isEmpty)
+
+            // Perform refresh
+            var newAccessToken = ""
+            var newRefreshToken = ""
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": initialRefreshToken])
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let pair = try res.content.decode(TokenPairResponseTest.self)
+                    newAccessToken = pair.accessToken
+                    newRefreshToken = pair.refreshToken
+                    #expect(!newAccessToken.isEmpty)
+                    #expect(!newRefreshToken.isEmpty)
+                    #expect(newRefreshToken != initialRefreshToken)
+                }
+            )
+
+            // Verify the new access token is valid
+            try await app.testing().test(
+                .GET, "students/\(UUID().uuidString)",
+                beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: newAccessToken)
+                },
+                afterResponse: { res async in
+                    // Should pass auth and return 404/403 based on UUID, not 401
+                    #expect(res.status != .unauthorized)
+                }
+            )
+        }
+    }
+
+    @Test("Refresh token reuse detection: replaying revoked token revokes entire token family")
+    func testRefreshTokenReuseDetection() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "reuse@example.com", on: app)
+            let loginPayload = ["email": "reuse@example.com", "password": "secret123"]
+            var token1 = ""
+
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    token1 = fullResponse.tokens?.refreshToken ?? ""
+                }
+            )
+
+            // Step 1: Rotate token1 -> token2
+            var token2 = ""
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": token1])
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let pair = try res.content.decode(TokenPairResponseTest.self)
+                    token2 = pair.refreshToken
+                }
+            )
+            #expect(!token2.isEmpty)
+
+            // Step 2: Attacker replays token1 (already used/revoked)
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": token1])
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .unauthorized)
+                }
+            )
+
+            // Step 3: Legitimate user tries to use token2 — must now ALSO be rejected
+            // because reuse detection revoked all active sessions for this user
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": token2])
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .unauthorized)
+                }
+            )
+        }
+    }
+
+    @Test("Refresh token: invalid token returns 401 unauthorized")
+    func testInvalidRefreshToken() async throws {
+        try await withApp { app in
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": "deadbeef-nonexistent-token"])
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .unauthorized)
+                }
+            )
+        }
+    }
+
+    @Test("Refresh token: expired token returns 401 and persists revocation in database")
+    func testExpiredRefreshTokenPersistsRevocation() async throws {
+        try await withApp { app in
+            let student = try await registerStudent(email: "expiredrefresh@example.com", on: app)
+            guard let studentID = student.id else {
+                Issue.record("Missing student ID")
+                return
+            }
+            let rawRefreshToken = "test_expired_refresh_token_string"
+            let tokenHash = TokenService.hashToken(rawRefreshToken)
+
+            let repo = DatabaseRefreshTokenRepository()
+            let expiredModel = RefreshToken(
+                tokenHash: tokenHash,
+                userID: studentID,
+                expiresAt: Date().addingTimeInterval(-3600),
+                isRevoked: false
+            )
+            try await repo.create(expiredModel, on: app.db)
+
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": rawRefreshToken])
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .unauthorized)
+                }
+            )
+
+            let stored = try await repo.find(byHash: tokenHash, on: app.db)
+            #expect(stored != nil)
+            #expect(stored?.isRevoked == true)
+        }
+    }
+
+    @Test("Logout without refresh-token body revokes all refresh tokens for authenticated student")
+    func testLogoutRevokesRefreshTokensWithoutBody() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "logouttest@example.com", on: app)
+            let loginPayload = ["email": "logouttest@example.com", "password": "secret123"]
+            var accessToken = ""
+            var refreshToken = ""
+
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    accessToken = fullResponse.token.token
+                    refreshToken = fullResponse.tokens?.refreshToken ?? ""
+                }
+            )
+            #expect(!accessToken.isEmpty)
+            #expect(!refreshToken.isEmpty)
+
+            // Logout with ONLY the Bearer token (no request body)
+            try await app.testing().test(
+                .POST, "auth/logout",
+                beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: accessToken)
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                }
+            )
+
+            // Refresh token should now be rejected because all sessions were revoked
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": refreshToken])
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .unauthorized)
+                }
+            )
+        }
+    }
+
+    @Test("Refreshing the same token twice yields exactly one success and one unauthorized")
+    func testDoubleRefreshYieldsOneSuccessOneFailure() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "doublerefresh@example.com", on: app)
+            let loginPayload = ["email": "doublerefresh@example.com", "password": "secret123"]
+            var refreshToken = ""
+
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    refreshToken = fullResponse.tokens?.refreshToken ?? ""
+                }
+            )
+            #expect(!refreshToken.isEmpty)
+
+            // First refresh: Must succeed (200 OK)
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": refreshToken])
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .ok)
+                }
+            )
+
+            // Second refresh with the same token: Must fail (401 Unauthorized)
+            try await app.testing().test(
+                .POST, "auth/refresh",
+                beforeRequest: { req in
+                    try req.content.encode(["refreshToken": refreshToken])
+                },
+                afterResponse: { res async in
+                    #expect(res.status == .unauthorized)
+                }
+            )
+        }
+    }
+
+    @Test("Concurrent refresh requests with the same token result in only one successful rotation")
+    func testConcurrentRefreshRequests() async throws {
+        try await withApp { app in
+            _ = try await registerStudent(email: "concurrent@example.com", on: app)
+            let loginPayload = ["email": "concurrent@example.com", "password": "secret123"]
+            var refreshToken = ""
+
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    refreshToken = fullResponse.tokens?.refreshToken ?? ""
+                }
+            )
+            #expect(!refreshToken.isEmpty)
+            let tokenToRefresh = refreshToken
+
+            // Execute two concurrent refresh calls for the same token
+            async let req1: HTTPStatus = {
+                var status: HTTPStatus = .internalServerError
+                try await app.testing().test(
+                    .POST, "auth/refresh",
+                    beforeRequest: { req in
+                        try req.content.encode(["refreshToken": tokenToRefresh])
+                    },
+                    afterResponse: { res async in
+                        status = res.status
+                    }
+                )
+                return status
+            }()
+
+            async let req2: HTTPStatus = {
+                var status: HTTPStatus = .internalServerError
+                try await app.testing().test(
+                    .POST, "auth/refresh",
+                    beforeRequest: { req in
+                        try req.content.encode(["refreshToken": tokenToRefresh])
+                    },
+                    afterResponse: { res async in
+                        status = res.status
+                    }
+                )
+                return status
+            }()
+
+            let statuses = try await [req1, req2]
+            let okCount = statuses.filter { $0 == .ok }.count
+            let unauthorizedCount = statuses.filter { $0 == .unauthorized }.count
+
+            // Exactly one should succeed and one should fail
+            #expect(okCount == 1)
+            #expect(unauthorizedCount == 1)
+        }
+    }
+
+    @Test("Production database (PostgreSQL): Concurrent refresh requests with the same token result in only one successful rotation")
+    func testPostgresConcurrentRefreshRequests() async throws {
+        try await withPostgresApp { app in
+            _ = try await registerStudent(email: "pg_concurrent@example.com", on: app)
+            let loginPayload = ["email": "pg_concurrent@example.com", "password": "secret123"]
+            var refreshToken = ""
+
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    refreshToken = fullResponse.tokens?.refreshToken ?? ""
+                }
+            )
+            #expect(!refreshToken.isEmpty)
+            let tokenToRefresh = refreshToken
+
+            async let req1: HTTPStatus = {
+                var status: HTTPStatus = .internalServerError
+                try await app.testing().test(
+                    .POST, "auth/refresh",
+                    beforeRequest: { req in
+                        try req.content.encode(["refreshToken": tokenToRefresh])
+                    },
+                    afterResponse: { res async in
+                        status = res.status
+                    }
+                )
+                return status
+            }()
+
+            async let req2: HTTPStatus = {
+                var status: HTTPStatus = .internalServerError
+                try await app.testing().test(
+                    .POST, "auth/refresh",
+                    beforeRequest: { req in
+                        try req.content.encode(["refreshToken": tokenToRefresh])
+                    },
+                    afterResponse: { res async in
+                        status = res.status
+                    }
+                )
+                return status
+            }()
+
+            let statuses = try await [req1, req2]
+            let okCount = statuses.filter { $0 == .ok }.count
+            let unauthorizedCount = statuses.filter { $0 == .unauthorized }.count
+
+            #expect(okCount == 1)
+            #expect(unauthorizedCount == 1)
+        }
+    }
+
+    @Test("Production database (MySQL): Concurrent refresh requests with the same token result in only one successful rotation")
+    func testMySQLConcurrentRefreshRequests() async throws {
+        try await withMySQLApp { app in
+            _ = try await registerStudent(email: "mysql_concurrent@example.com", on: app)
+            let loginPayload = ["email": "mysql_concurrent@example.com", "password": "secret123"]
+            var refreshToken = ""
+
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    refreshToken = fullResponse.tokens?.refreshToken ?? ""
+                }
+            )
+            #expect(!refreshToken.isEmpty)
+            let tokenToRefresh = refreshToken
+
+            async let req1: HTTPStatus = {
+                var status: HTTPStatus = .internalServerError
+                try await app.testing().test(
+                    .POST, "auth/refresh",
+                    beforeRequest: { req in
+                        try req.content.encode(["refreshToken": tokenToRefresh])
+                    },
+                    afterResponse: { res async in
+                        status = res.status
+                    }
+                )
+                return status
+            }()
+
+            async let req2: HTTPStatus = {
+                var status: HTTPStatus = .internalServerError
+                try await app.testing().test(
+                    .POST, "auth/refresh",
+                    beforeRequest: { req in
+                        try req.content.encode(["refreshToken": tokenToRefresh])
+                    },
+                    afterResponse: { res async in
+                        status = res.status
+                    }
+                )
+                return status
+            }()
+
+            let statuses = try await [req1, req2]
+            let okCount = statuses.filter { $0 == .ok }.count
+            let unauthorizedCount = statuses.filter { $0 == .unauthorized }.count
+
+            #expect(okCount == 1)
+            #expect(unauthorizedCount == 1)
+        }
+    }
+
+    @Test("Refresh token expiry matches configured JWT_REFRESH_TTL")
+    func testRefreshTokenExpiryMatchesConfiguredTTL() async throws {
+        // Set configured TTL to 3600 seconds (1 hour)
+        setenv("JWT_REFRESH_TTL", "3600", 1)
+        defer { unsetenv("JWT_REFRESH_TTL") }
+
+        try await withApp { app in
+            _ = try await registerStudent(email: "expirytest@example.com", on: app)
+            let loginPayload = ["email": "expirytest@example.com", "password": "secret123"]
+            var rawRefreshToken = ""
+
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    rawRefreshToken = fullResponse.tokens?.refreshToken ?? ""
+                }
+            )
+            #expect(!rawRefreshToken.isEmpty)
+
+            let tokenHash = TokenService.hashToken(rawRefreshToken)
+            guard let storedToken = try await RefreshToken.query(on: app.db)
+                .filter(\.$tokenHash == tokenHash)
+                .first()
+            else {
+                Issue.record("Expected to find stored refresh token in database")
+                return
+            }
+
+            // Expiry should be approximately now + 3600s, definitely not 30 days (2592000s)
+            let expectedExpiry = Date().addingTimeInterval(3600)
+            let diff = abs(storedToken.expiresAt.timeIntervalSince(expectedExpiry))
+            #expect(diff < 10) // within 10 seconds tolerance
+        }
+    }
+
+    @Test("Enterprise Unified Error: 401 returns standardized error envelope")
+    func testUnifiedErrorEnvelope() async throws {
+        try await withApp { app in
+            try await app.testing().test(
+                .GET, "students/11111111-1111-1111-1111-111111111111",
+                afterResponse: { res async throws in
+                    #expect(res.status == .unauthorized)
+                    let errorEnvelope = try res.content.decode(UnifiedErrorResponseTest.self)
+                    #expect(errorEnvelope.error.code == "UNAUTHORIZED")
+                    #expect(!errorEnvelope.error.message.isEmpty)
+                    #expect(!errorEnvelope.error.timestamp.isEmpty)
+                }
+            )
+        }
+    }
+
+    @Test("Atomic consumeIfActive: single-use semantics and reuse detection")
+    func testAtomicConsumeIfActive() async throws {
+        try await withApp { app in
+            let student = try await registerStudent(email: "consume_test@example.com", on: app)
+            guard let studentID = student.id else {
+                Issue.record("Missing student ID")
+                return
+            }
+            let rawToken = [UInt8].random(count: 32).map { String(format: "%02hhx", $0) }.joined()
+            let tokenHash = TokenService.hashToken(rawToken)
+
+            let repo = DatabaseRefreshTokenRepository()
+            let tokenModel = RefreshToken(
+                tokenHash: tokenHash,
+                userID: studentID,
+                expiresAt: Date().addingTimeInterval(3600),
+                isRevoked: false
+            )
+            try await repo.create(tokenModel, on: app.db)
+
+            // First consume: should succeed (.consumed)
+            let firstResult = try await repo.consumeIfActive(byHash: tokenHash, on: app.db)
+            switch firstResult {
+            case .consumed(let consumedToken):
+                #expect(consumedToken.isRevoked == true)
+            default:
+                Issue.record("Expected .consumed on first consume, got: \(firstResult)")
+            }
+
+            // Second consume: should detect reuse (.alreadyRevoked)
+            let secondResult = try await repo.consumeIfActive(byHash: tokenHash, on: app.db)
+            switch secondResult {
+            case .alreadyRevoked(let userID):
+                #expect(userID == studentID)
+            default:
+                Issue.record("Expected .alreadyRevoked on second consume, got: \(secondResult)")
+            }
+
+            // Non-existent token: should return .notFound
+            let unknownResult = try await repo.consumeIfActive(byHash: "unknown_hash", on: app.db)
+            switch unknownResult {
+            case .notFound:
+                #expect(true)
+            default:
+                Issue.record("Expected .notFound, got: \(unknownResult)")
+            }
+        }
+    }
+
+    @Test("Unified Error: Malformed JSON body returns HTTP 400 with BAD_REQUEST envelope")
+    func testMalformedJSONBodyReturnsUnifiedBadRequest() async throws {
+        try await withApp { app in
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    req.headers.contentType = .json
+                    req.body = ByteBuffer(string: "{ \"email\": \"bad json format")
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .badRequest)
+                    let errorEnvelope = try res.content.decode(UnifiedErrorResponseTest.self)
+                    #expect(errorEnvelope.error.code == "BAD_REQUEST")
+                    #expect(!errorEnvelope.error.message.isEmpty)
+                    #expect(!errorEnvelope.error.timestamp.isEmpty)
+                }
+            )
+        }
+    }
+
+    @Test("Unified Error: 404 Route Not Found returns standardized error envelope")
+    func testUnifiedErrorNotFound() async throws {
+        try await withApp { app in
+            try await app.testing().test(
+                .GET, "non-existent-route-404",
+                afterResponse: { res async throws in
+                    #expect(res.status == .notFound)
+                    let errorEnvelope = try res.content.decode(UnifiedErrorResponseTest.self)
+                    #expect(errorEnvelope.error.code == "NOT_FOUND")
+                    #expect(!errorEnvelope.error.message.isEmpty)
+                    #expect(!errorEnvelope.error.timestamp.isEmpty)
+                }
+            )
+        }
+    }
+
+    @Test("Token lifecycle: cleanup removes expired and revoked tokens")
+    func testTokenCleanupExpiredAndRevoked() async throws {
+        try await withApp { app in
+            let student = try await registerStudent(email: "cleanup_test@example.com", on: app)
+            guard let studentID = student.id else {
+                Issue.record("Missing student ID")
+                return
+            }
+            let repo = DatabaseRefreshTokenRepository()
+
+            // 1. Expired token
+            let expiredToken = RefreshToken(
+                tokenHash: "expired_hash_1",
+                userID: studentID,
+                expiresAt: Date().addingTimeInterval(-3600),
+                isRevoked: false
+            )
+            try await repo.create(expiredToken, on: app.db)
+
+            // 2. Revoked token
+            let revokedToken = RefreshToken(
+                tokenHash: "revoked_hash_2",
+                userID: studentID,
+                expiresAt: Date().addingTimeInterval(3600),
+                isRevoked: true
+            )
+            try await repo.create(revokedToken, on: app.db)
+
+            // 3. Active valid token
+            let activeToken = RefreshToken(
+                tokenHash: "active_hash_3",
+                userID: studentID,
+                expiresAt: Date().addingTimeInterval(3600),
+                isRevoked: false
+            )
+            try await repo.create(activeToken, on: app.db)
+
+            let cleanedCount = try await TokenService.shared.cleanupExpiredTokens(on: app.db)
+            #expect(cleanedCount == 2)
+
+            // Assert active token is still present
+            let foundActive = try await repo.find(byHash: "active_hash_3", on: app.db)
+            #expect(foundActive != nil)
+
+            // Assert expired and revoked tokens are removed
+            let foundExpired = try await repo.find(byHash: "expired_hash_1", on: app.db)
+            #expect(foundExpired == nil)
+            let foundRevoked = try await repo.find(byHash: "revoked_hash_2", on: app.db)
+            #expect(foundRevoked == nil)
+        }
+    }
 }
 
 // MARK: - Test Request/Response Types
@@ -2701,4 +3476,28 @@ struct ResetPasswordPayload: Content {
     let sessionToken: String
     let newPassword: String
     let confirmPassword: String
+}
+
+// MARK: - Dual Token & Unified Error Response Test Types
+
+struct FullLoginResponseTest: Content {
+    var user: StudentPublicResponse
+    var token: TokenResponseTest
+    var tokens: TokenPairResponseTest?
+}
+
+struct TokenPairResponseTest: Content {
+    var accessToken: String
+    var refreshToken: String
+    var tokenType: String
+    var expiresIn: Int
+}
+
+struct UnifiedErrorResponseTest: Content {
+    struct ErrorDetail: Content {
+        let code: String
+        let message: String
+        let timestamp: String
+    }
+    let error: ErrorDetail
 }

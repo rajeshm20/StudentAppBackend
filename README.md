@@ -39,6 +39,7 @@
 - [Project Structure](#project-structure)
 - [Contributing](#contributing)
 - [License and Maintainers](#license-and-maintainers)
+- [Acknowledgments](#acknowledgments)
 
 ---
 
@@ -61,6 +62,7 @@ flowchart TD
     end
 
     subgraph SecurityPipeline["Security & Gateway Middleware"]
+        UnifiedErr["UnifiedErrorMiddleware<br/>(Unified API Error Envelopes)"]
         SecHeaders["SecurityHeadersMiddleware<br/>(HSTS, CSP, X-Frame-Options)"]
         CORS["CORSMiddleware<br/>(Strict Origin Validation)"]
         RateLimit["RateLimiterMiddleware<br/>(DDoS / Brute-Force Throttling)"]
@@ -68,7 +70,7 @@ flowchart TD
 
     subgraph Routing["Routing Layer (routes.swift)"]
         HealthRoutes["HealthController<br/>GET /health/live<br/>GET /health/ready"]
-        AuthRoutes["AuthController<br/>POST /auth/signup/student<br/>POST /auth/login<br/>POST /auth/forgot-password<br/>POST /auth/reset-password"]
+        AuthRoutes["AuthController<br/>POST /auth/signup/student<br/>POST /auth/login<br/>POST /auth/refresh<br/>POST /auth/forgot-password<br/>POST /auth/reset-password<br/>POST /auth/logout"]
         StudentRoutes["StudentController<br/>GET /students/:id"]
         GraphQLRoute["GraphQL Routes<br/>POST /graphql<br/>GET /graphiql"]
     end
@@ -79,14 +81,22 @@ flowchart TD
     end
 
     subgraph Services["Domain Services"]
-        TokenSvc["TokenService<br/>(JWT Signing & Revocation)"]
+        TokenSvc["TokenService<br/>(Dual Token Lifecycle, RTR & Revocation)"]
         StudentSvc["StudentService<br/>(Registration & Auth Logic)"]
         EmailSvc["SendGridEmailService<br/>(Async HTTP OTP Delivery)"]
     end
 
-    subgraph Persistence["Persistence Tier (Fluent ORM)"]
-        Fluent["Fluent Engine<br/>(FluentPostgresDriver / SQLKit)"]
+    subgraph Repositories["Data Repositories (Protocol-Driven)"]
+        StudentRepo["StudentRepository<br/>(Student Identity & Lookups)"]
+        RefreshRepo["RefreshTokenRepository<br/>(Atomic Token Consume & Cleanup)"]
+        ResetRepo["PasswordResetRepository<br/>(OTP Verification & Sessions)"]
+        RevokedRepo["RevokedTokenRepository<br/>(Access Token JTI Denylist)"]
+    end
+
+    subgraph Persistence["Persistence Tier (Fluent ORM & Concurrency Pool)"]
+        Fluent["Fluent Engine<br/>(FluentPostgresDriver / SQLite Memory)"]
         Postgres[(PostgreSQL 16 Database)]
+        RefreshTokens[("Refresh Tokens Table (SHA-256)")]
         RevokedTokens[("Revoked Tokens Table")]
         ResetTokens[("Password Reset Tokens Table")]
     end
@@ -95,11 +105,11 @@ flowchart TD
         SendGrid["SendGrid REST API<br/>(v3 Mail Send)"]
     end
 
-    iOS --> SecHeaders
-    Web --> SecHeaders
-    Playground --> SecHeaders
+    iOS --> UnifiedErr
+    Web --> UnifiedErr
+    Playground --> UnifiedErr
 
-    SecHeaders --> CORS --> RateLimit
+    UnifiedErr --> SecHeaders --> CORS --> RateLimit
 
     RateLimit --> HealthRoutes
     RateLimit --> AuthRoutes
@@ -114,10 +124,20 @@ flowchart TD
     StudentRoutes --> StudentSvc
 
     EmailSvc -.->|"AsyncHTTPClient"| SendGrid
-    TokenSvc --> Fluent
-    StudentSvc --> Fluent
+    StudentSvc --> StudentRepo
+    TokenSvc --> RefreshRepo
+    TokenSvc --> RevokedRepo
+    TokenSvc --> StudentRepo
+    AuthRoutes --> ResetRepo
+    GraphQLRoute --> StudentRepo
+
+    StudentRepo --> Fluent
+    RefreshRepo --> Fluent
+    ResetRepo --> Fluent
+    RevokedRepo --> Fluent
 
     Fluent --> Postgres
+    Fluent --> RefreshTokens
     Fluent --> RevokedTokens
     Fluent --> ResetTokens
     HealthRoutes -.->|"SELECT 1"| Postgres
@@ -149,10 +169,12 @@ flowchart TD
 ### REST API
 - **Canonical Student Registration**: `POST /auth/signup/student` accepts structured profiles, normalizes country codes and phone numbers (E.164), and enforces server-side role assignment (`role: student`).
 - **Legacy Signup Compatibility**: `POST /auth/signup` remains operational to support backwards compatibility with legacy client versions.
-- **Enumeration-Safe Login**: `POST /auth/login` validates credentials against bcrypt hashes and returns uniform unauthorized errors to prevent account enumeration.
-- **Session Revocation**: `POST /auth/logout` invalidates JWT tokens in real-time by persisting revoked tokens to a database blacklist.
+- **Enumeration-Safe Login**: `POST /auth/login` validates credentials against bcrypt hashes and returns dual tokens (`accessToken` and `refreshToken`).
+- **Refresh Token Rotation (RTR)**: `POST /auth/refresh` exchanges a valid refresh token for a brand-new token pair, invalidating the old token and enforcing replay attack detection.
+- **Session Revocation**: `POST /auth/logout` invalidates both access tokens and active refresh token families in real-time.
 - **Protected Student Resources**: `GET /students/:studentID` enforces fine-grained authorization via `AuthorizationService` to strictly block Insecure Direct Object References (IDOR).
 - **Probes**: `GET /health/live` for liveness checks and `GET /health/ready` for database readiness validation (`SELECT 1`).
+- **Unified Error Responses**: `UnifiedErrorMiddleware` intercepts all HTTP errors, validation errors, decoding exceptions, and unhandled failures to emit standardized envelopes with deterministic machine error codes (`code`), human-readable messages (`message`), and ISO 8601 timestamps.
 
 ### GraphQL API
 - **Full-Featured GraphQL Endpoint**: `POST /graphql` provides queries and mutations matching REST parity.
@@ -161,9 +183,12 @@ flowchart TD
 - **Interactive Playground**: Embedded GraphiQL web console at `GET /graphiql` (automatically disabled in production).
 
 ### Authentication & RBAC
-- **Cryptographic Tokens**: HMAC-SHA256 signed JSON Web Tokens with configurable expiration (`JWT_ACCESS_TTL`).
+- **Dual-Token Lifecycle**: Short-lived HMAC-SHA256 signed access tokens (`JWT_ACCESS_TTL`, default 15 mins) paired with cryptographic refresh tokens (`JWT_REFRESH_TTL`, default 7 days).
+- **Refresh Token Rotation (RTR)**: Every refresh operation issues a single-use token pair while revoking the predecessor token.
+- **SHA-256 Hashing at Rest**: Refresh tokens are hashed using SHA-256 before database insertion, protecting active sessions against database dump exposure.
+- **Automatic Compromise Detection**: Attempting to reuse an already-revoked refresh token triggers automated session family revocation, immediately expelling attackers across all sessions.
 - **Role Scoping**: Enforces granular permissions across four defined roles: `admin`, `principal`, `teacher`, and `student`.
-- **Database Blacklisting**: Instant token revocation upon logout, preventing replay attacks before JWT expiration.
+- **Database Blacklisting**: Instant access token revocation upon logout, preventing replay attacks before JWT expiration.
 
 ### Transactional Email & Password Recovery
 - **Two-Phase OTP Password Reset**: 6-digit numeric verification code dispatched via SendGrid with a 10-minute validity window.
@@ -171,10 +196,13 @@ flowchart TD
 - **Ephemeral Session Tokens**: Code verification returns an unguessable 32-byte URL-safe session token required to finalize password updates.
 - **Console Fallback**: Automatically falls back to console logging when `SENDGRID_API_KEY` is not supplied in local environments.
 
-### Security Hardening
+### Security & Enterprise Hardening
+- **Repository Abstraction Layer**: Protocol-driven `StudentRepository`, `RefreshTokenRepository`, `PasswordResetRepository`, and `RevokedTokenRepository` isolate business logic from database drivers, ensuring controllers and GraphQL resolvers are 100% decoupled from direct Fluent ORM calls.
+- **Tuned Concurrency & Connection Pooling**: Production-tuned PostgreSQL connection pools (`maxConnectionsPerEventLoop: 8`, `connectionPoolTimeout: 10s`) prevent thread starvation under heavy load.
 - **Strict TLS Controls**: Minimum TLS 1.2 enforcement (configurable up to TLS 1.3) with hardened AEAD cipher suites (`ECDHE-*-GCM-*` and `CHACHA20-POLY1305`).
 - **HTTP Strict Transport Security (HSTS)**: Configurable HSTS headers with preload list validation and reverse-proxy header trust.
 - **Zero Hardcoded Secrets**: Fail-loudly startup validation ensures no production instance runs with default or placeholder database credentials or JWT keys.
+- **Hermetic Test Isolation**: Automatic in-memory SQLite isolation for test execution (`app.environment == .testing`), guaranteeing fast and deterministic CI runs without external DB dependencies.
 
 ---
 
@@ -278,7 +306,9 @@ The application strictly validates environment variables during startup and fail
 | `DATABASE_PASSWORD` | **Yes** | Database password (**no default in prod**) | *Secret* |
 | `DATABASE_TLS_MODE` | No | Database TLS mode (`disable`, `verifyFull`, `noVerify`) | `disable` |
 | `JWT_SECRET` | **Yes** | Secret for signing JWTs (min 32 chars in prod) | *Min 32-character secret* |
-| `JWT_ACCESS_TTL` | No | JWT access token lifetime in seconds | `3600` (1 hour) |
+| `JWT_ACCESS_TTL` | No | JWT access token lifetime in seconds | `900` (15 minutes) |
+| `JWT_REFRESH_TTL` | No | Refresh token lifetime in seconds | `604800` (7 days) |
+| `TEST_USE_EXTERNAL_DB` | No | Bypass in-memory SQLite isolation in test runs | `false` |
 | `ALLOWED_ORIGIN` | **Yes** (Prod) | Explicit CORS origin header | `http://localhost:8081` |
 
 <details>
@@ -318,11 +348,12 @@ The application strictly validates environment variables during startup and fail
 | `GET` | `/health/ready` | Database connection readiness probe | None |
 | `POST` | `/auth/signup/student` | Register student account (canonical) | None |
 | `POST` | `/auth/signup` | Legacy student registration alias | None |
-| `POST` | `/auth/login` | Authenticate and obtain JWT access token | None |
+| `POST` | `/auth/login` | Authenticate and obtain dual token pair (`accessToken` + `refreshToken`) | None |
+| `POST` | `/auth/refresh` | Rotate refresh token and obtain new token pair (with reuse detection) | None |
 | `POST` | `/auth/forgot-password` | Request password reset verification code | None |
 | `POST` | `/auth/verify-reset-code` | Verify 6-digit OTP and obtain session token | None |
 | `POST` | `/auth/reset-password` | Reset password using verified session token | None |
-| `POST` | `/auth/logout` | Revoke active JWT and invalidate session | Bearer JWT |
+| `POST` | `/auth/logout` | Revoke active JWT and invalidate refresh token session family | Bearer JWT |
 | `GET` | `/students/:studentID` | Retrieve student profile (IDOR protected) | Bearer JWT |
 
 <details>
@@ -371,11 +402,57 @@ The application strictly validates environment variables during startup and fail
     "status": "active"
   },
   "token": {
-    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refreshToken": "7a9e2c4d8b1f50a3c2...",
+    "tokenType": "Bearer",
+    "expiresIn": 900
   },
-  "status": "ok"
+  "status": "ok",
+  "tokens": {
+    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refreshToken": "7a9e2c4d8b1f50a3c2...",
+    "tokenType": "Bearer",
+    "expiresIn": 900
+  }
 }
 ```
+
+#### Token Refresh & Rotation (`POST /auth/refresh`)
+
+```json
+// Request
+{
+  "refreshToken": "7a9e2c4d8b1f50a3c2..."
+}
+
+// Response (200 OK)
+{
+  "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refreshToken": "e3b0c44298fc1c149a...",
+  "tokenType": "Bearer",
+  "expiresIn": 900
+}
+```
+
+> **Note on Login Response Backward Compatibility**: The canonical token pair is returned in `tokens` (`accessToken` and `refreshToken`). The top-level `token` object is maintained for legacy client compatibility and is scheduled for deprecation in v2.0.
+
+#### Unified API Error Envelope
+
+```json
+// Response (401 Unauthorized)
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Invalid email or password",
+    "timestamp": "2026-09-20T00:15:30.123Z"
+  }
+}
+```
+
+The error envelope provides a consistent contract across all endpoints:
+- `code`: Deterministic machine-readable error identifier (e.g., `BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `EMAIL_ALREADY_EXISTS`, `INTERNAL_SERVER_ERROR`).
+- `message`: Descriptive human-readable explanation safe for client consumption.
+- `timestamp`: ISO 8601 string with millisecond precision recording when the error occurred.
 
 </details>
 
@@ -435,15 +512,22 @@ query GetStudents {
 
 ## Running Tests
 
-The test suite is built on the Swift Testing framework (`Testing` and `VaporTesting`) and executes integration tests covering authentication, RBAC, IDOR barriers, schema validation, TLS configurations, and dev certificate lifecycles.
+The test suite is built on the Swift Testing framework (`Testing` and `VaporTesting`) and executes 125 comprehensive integration and unit tests covering authentication, RBAC, IDOR barriers, schema validation, TLS configurations, and dev certificate lifecycles.
 
-Execute all tests locally:
+> [!TIP]
+> **Zero-Dependency Test Harness**: When running tests (`app.environment == .testing`), the server automatically isolates persistence within an ephemeral in-memory SQLite database (`.sqlite(.memory)`). You do not need PostgreSQL or Docker running to execute the full test suite locally or in CI pipelines. Set `TEST_USE_EXTERNAL_DB=true` if you specifically want to run tests against your configured external database.
+
+Execute all 125 tests locally:
 
 ```bash
 swift test -v
 ```
 
 ### Test Suite Coverage Highlights
+- **Refresh Token Rotation (RTR)**: Validates single-use token rotation, token expiry, cryptographic SHA-256 hash lookups, and session issuance.
+- **Compromise Detection & Family Invalidation**: Asserts that attempting to reuse an already-revoked refresh token immediately invalidates the entire session family for that student.
+- **Repository Abstraction Layer**: Verifies decoupled persistence logic across `StudentRepository` and `RefreshTokenRepository`.
+- **Unified API Error Envelopes**: Tests verify uniform error payloads (`code`, `message`, `timestamp`) across HTTP abort exceptions, malformed request bodies, and unhandled system errors.
 - **RBAC & Privilege Escalation**: Tests verify that client-supplied role parameters are discarded during registration.
 - **IDOR Prevention**: Asserts that student tokens attempting to access foreign `studentID` records receive `403 Forbidden`.
 - **Credential Hygiene**: Validates E.164 phone formatting, password complexity limits, and email normalization.
@@ -551,16 +635,18 @@ StudentAppBackend/
 ├── Sources/
 │   └── StudentAppBackend/
 │       ├── entrypoint.swift        # Application entrypoint & .env bootstrap
-│       ├── Configure/              # Database setup, JWT, CORS, TLS & security middleware
+│       ├── Configure/              # UnifiedErrorMiddleware, database, JWT, CORS, TLS
 │       ├── Controllers/            # Thin REST controllers (Auth, Student, Health)
+│       ├── DTOs/                   # Data transfer objects (AuthDTOs, StudentDTOs)
 │       ├── GraphQL/                # Graphiti schema definitions & resolvers
-│       ├── Migrations/             # Fluent database schema migrations
-│       ├── Models/                 # Fluent database entities & DTO representations
+│       ├── Migrations/             # Fluent database schema migrations (Students, RefreshTokens)
+│       ├── Models/                 # Database entities (Student, RefreshToken, TokenBlacklist)
+│       ├── Repositories/           # Data access repositories (StudentRepository, RefreshTokenRepository)
 │       ├── Routes/                 # HTTP & GraphQL routing dispatchers
-│       └── Services/               # Business logic (TokenService, StudentService, SendGrid)
+│       └── Services/               # Domain logic (TokenService, StudentService, SendGrid)
 ├── Specs/                          # Architectural and security specifications
 └── Tests/
-    └── StudentAppBackendTests/     # Comprehensive integration & unit test suite
+    └── StudentAppBackendTests/     # Comprehensive 125-test integration & unit suite
 ```
 
 ---
@@ -589,3 +675,9 @@ This project is licensed under the terms of the [MIT License](LICENSE).
 - **Repository**: [rajeshm20/StudentAppBackend](https://github.com/rajeshm20/StudentAppBackend)
 
 > **Image Asset Note**: If visual UI screenshots or architecture mockups are added in the future, please place them in `./docs/images/` and link them using standard Markdown syntax.
+
+---
+
+## Acknowledgments
+
+Built with the assistance of AI coding tools (e.g., Claude) for scaffolding and code review; architecture and implementation decisions are my own.
