@@ -14,21 +14,14 @@ public struct HardenPasswordResetTokens: AsyncMigration {
         let isMySQL = dialect.contains("mysql") || driverName.contains("mysql")
 
         if isPostgres {
-            // 1. Add new columns if missing
+            // 1. Add new columns independently if missing (natively supported in Postgres)
             try await sql.raw("""
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM information_schema.columns 
-                        WHERE table_name = 'password_reset_tokens' AND column_name = 'code_hash'
-                    ) THEN
-                        ALTER TABLE password_reset_tokens ADD COLUMN code_hash VARCHAR(255);
-                        ALTER TABLE password_reset_tokens ADD COLUMN session_token_hash VARCHAR(255);
-                        ALTER TABLE password_reset_tokens ADD COLUMN code_expires_at TIMESTAMP;
-                        ALTER TABLE password_reset_tokens ADD COLUMN session_expires_at TIMESTAMP;
-                        ALTER TABLE password_reset_tokens ADD COLUMN created_at TIMESTAMP;
-                    END IF;
-                END $$;
+                ALTER TABLE password_reset_tokens 
+                    ADD COLUMN IF NOT EXISTS code_hash VARCHAR(255),
+                    ADD COLUMN IF NOT EXISTS session_token_hash VARCHAR(255),
+                    ADD COLUMN IF NOT EXISTS code_expires_at TIMESTAMP,
+                    ADD COLUMN IF NOT EXISTS session_expires_at TIMESTAMP,
+                    ADD COLUMN IF NOT EXISTS created_at TIMESTAMP
             """).run()
 
             // 2. Invalidate any existing reset token rows to remediate legacy plaintext secrets
@@ -59,30 +52,6 @@ public struct HardenPasswordResetTokens: AsyncMigration {
             """).run()
 
         } else if isMySQL {
-            // 1. Add new columns if missing
-            let hashColumns = try await sql.raw("""
-                SELECT COLUMN_NAME 
-                FROM information_schema.COLUMNS 
-                WHERE TABLE_SCHEMA = DATABASE() 
-                  AND TABLE_NAME = 'password_reset_tokens' 
-                  AND COLUMN_NAME = 'code_hash'
-            """).all()
-
-            if hashColumns.isEmpty {
-                try await sql.raw("""
-                    ALTER TABLE password_reset_tokens 
-                    ADD COLUMN code_hash VARCHAR(255) NULL,
-                    ADD COLUMN session_token_hash VARCHAR(255) NULL,
-                    ADD COLUMN code_expires_at DATETIME NULL,
-                    ADD COLUMN session_expires_at DATETIME NULL,
-                    ADD COLUMN created_at DATETIME NULL
-                """).run()
-            }
-
-            // 2. Invalidate any existing reset token rows
-            try await sql.raw("UPDATE password_reset_tokens SET used = 1 WHERE used = 0;").run()
-
-            // 3. Drop legacy plaintext and obsolete columns if they exist
             struct MySQLCol: Decodable {
                 let column_name: String
                 enum CodingKeys: String, CodingKey {
@@ -97,6 +66,27 @@ public struct HardenPasswordResetTokens: AsyncMigration {
             """).all(decoding: MySQLCol.self)
             let colNames = Set(existingColumns.map { $0.column_name.lowercased() })
 
+            // 1. Add new columns independently if missing
+            if !colNames.contains("code_hash") {
+                try await sql.raw("ALTER TABLE password_reset_tokens ADD COLUMN code_hash VARCHAR(255) NULL").run()
+            }
+            if !colNames.contains("session_token_hash") {
+                try await sql.raw("ALTER TABLE password_reset_tokens ADD COLUMN session_token_hash VARCHAR(255) NULL").run()
+            }
+            if !colNames.contains("code_expires_at") {
+                try await sql.raw("ALTER TABLE password_reset_tokens ADD COLUMN code_expires_at DATETIME NULL").run()
+            }
+            if !colNames.contains("session_expires_at") {
+                try await sql.raw("ALTER TABLE password_reset_tokens ADD COLUMN session_expires_at DATETIME NULL").run()
+            }
+            if !colNames.contains("created_at") {
+                try await sql.raw("ALTER TABLE password_reset_tokens ADD COLUMN created_at DATETIME NULL").run()
+            }
+
+            // 2. Invalidate any existing reset token rows
+            try await sql.raw("UPDATE password_reset_tokens SET used = 1 WHERE used = 0;").run()
+
+            // 3. Drop legacy plaintext and obsolete columns if they exist
             if colNames.contains("code") {
                 try await sql.raw("ALTER TABLE password_reset_tokens DROP COLUMN code").run()
             }
@@ -140,9 +130,9 @@ public struct HardenPasswordResetTokens: AsyncMigration {
                 let name: String
             }
             let info = try await sql.raw("PRAGMA table_info(password_reset_tokens)").all(decoding: TableColumn.self)
-            let columnNames = Set(info.map { $0.name })
+            let columnNames = Set(info.map { $0.name.lowercased() })
 
-            // 1. Add new columns if missing
+            // 1. Add new columns independently if missing
             if !columnNames.contains("code_hash") {
                 try await sql.raw("ALTER TABLE password_reset_tokens ADD COLUMN code_hash TEXT").run()
             }
@@ -166,13 +156,13 @@ public struct HardenPasswordResetTokens: AsyncMigration {
             if columnNames.contains("code") {
                 try await sql.raw("ALTER TABLE password_reset_tokens DROP COLUMN code").run()
             }
-            if columnNames.contains("sessionToken") {
+            if columnNames.contains("sessiontoken") {
                 try await sql.raw("ALTER TABLE password_reset_tokens DROP COLUMN sessionToken").run()
             }
-            if columnNames.contains("codeExpiresAt") {
+            if columnNames.contains("codeexpiresat") {
                 try await sql.raw("ALTER TABLE password_reset_tokens DROP COLUMN codeExpiresAt").run()
             }
-            if columnNames.contains("sessionExpiresAt") {
+            if columnNames.contains("sessionexpiresat") {
                 try await sql.raw("ALTER TABLE password_reset_tokens DROP COLUMN sessionExpiresAt").run()
             }
 

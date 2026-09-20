@@ -2129,6 +2129,7 @@ struct StudentAppBackendTests {
             #expect(colNames.contains("session_token_hash"), "'session_token_hash' column must exist")
             #expect(colNames.contains("code_expires_at"), "'code_expires_at' column must exist")
             #expect(colNames.contains("session_expires_at"), "'session_expires_at' column must exist")
+            #expect(colNames.contains("created_at"), "'created_at' column must exist")
 
             // Existing rows must be invalidated (used = true / 1)
             let rows = try await sql.raw("SELECT used FROM password_reset_tokens WHERE id = \(bind: legacyId);").all()
@@ -2138,6 +2139,172 @@ struct StudentAppBackendTests {
             }
             let isUsed: Bool = (try? firstRow.decode(column: "used", as: Bool.self)) ?? ((try? firstRow.decode(column: "used", as: Int.self)) == 1)
             #expect(isUsed, "Legacy token rows must be invalidated on migration")
+        }
+    }
+
+    @Test("Password Reset Migration: Recovers from partially migrated schema with only code_hash present")
+    func testPasswordResetMigrationRecoversFromPartialSchemaWithOnlyCodeHash() async throws {
+        try await withApp { app in
+            guard let sql = app.db as? any SQLDatabase else {
+                Issue.record("Test requires SQLDatabase")
+                return
+            }
+
+            // Simulate interrupted migration: table has only code_hash, but missing all other hardened columns
+            try await sql.raw("DROP TABLE IF EXISTS partial_password_reset_tokens;").run()
+            try await sql.raw("""
+                CREATE TABLE partial_password_reset_tokens (
+                    id VARCHAR(255) PRIMARY KEY,
+                    email VARCHAR(255) NOT NULL,
+                    code_hash VARCHAR(255),
+                    verified INTEGER NOT NULL DEFAULT 0,
+                    used INTEGER NOT NULL DEFAULT 0,
+                    attempts INTEGER NOT NULL DEFAULT 0
+                );
+            """).run()
+
+            try await sql.raw("DROP TABLE IF EXISTS password_reset_tokens;").run()
+            try await sql.raw("ALTER TABLE partial_password_reset_tokens RENAME TO password_reset_tokens;").run()
+
+            // Run migration
+            try await HardenPasswordResetTokens().prepare(on: app.db)
+
+            // Inspect columns
+            let dialect = sql.dialect.name.lowercased()
+            let isPostgres = dialect.contains("postgres") || dialect.contains("psql")
+            let isMySQL = dialect.contains("mysql")
+
+            let colNames: Set<String>
+            if isPostgres || isMySQL {
+                struct InfoSchemaCol: Decodable {
+                    let column_name: String
+                }
+                let cols = try await sql.raw("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'password_reset_tokens'
+                """).all(decoding: InfoSchemaCol.self)
+                colNames = Set(cols.map { $0.column_name.lowercased() })
+            } else {
+                struct ColInfo: Decodable {
+                    let name: String
+                }
+                let cols = try await sql.raw("PRAGMA table_info(password_reset_tokens);").all(decoding: ColInfo.self)
+                colNames = Set(cols.map { $0.name.lowercased() })
+            }
+
+            // All hardened columns must now be present
+            #expect(colNames.contains("code_hash"), "'code_hash' column must exist")
+            #expect(colNames.contains("session_token_hash"), "'session_token_hash' column must exist")
+            #expect(colNames.contains("code_expires_at"), "'code_expires_at' column must exist")
+            #expect(colNames.contains("session_expires_at"), "'session_expires_at' column must exist")
+            #expect(colNames.contains("created_at"), "'created_at' column must exist")
+        }
+    }
+
+    @Test("Password Reset Migration: Recovers from arbitrary subset of hardened columns")
+    func testPasswordResetMigrationRecoversFromArbitrarySubsetOfColumns() async throws {
+        try await withApp { app in
+            guard let sql = app.db as? any SQLDatabase else {
+                Issue.record("Test requires SQLDatabase")
+                return
+            }
+
+            // Simulate interrupted migration: table has code_hash and created_at, but missing session_token_hash, code_expires_at, session_expires_at
+            try await sql.raw("DROP TABLE IF EXISTS partial_subset_reset_tokens;").run()
+            try await sql.raw("""
+                CREATE TABLE partial_subset_reset_tokens (
+                    id VARCHAR(255) PRIMARY KEY,
+                    email VARCHAR(255) NOT NULL,
+                    code_hash VARCHAR(255),
+                    created_at VARCHAR(255),
+                    verified INTEGER NOT NULL DEFAULT 0,
+                    used INTEGER NOT NULL DEFAULT 0,
+                    attempts INTEGER NOT NULL DEFAULT 0
+                );
+            """).run()
+
+            try await sql.raw("DROP TABLE IF EXISTS password_reset_tokens;").run()
+            try await sql.raw("ALTER TABLE partial_subset_reset_tokens RENAME TO password_reset_tokens;").run()
+
+            // Run migration
+            try await HardenPasswordResetTokens().prepare(on: app.db)
+
+            // Inspect columns
+            let dialect = sql.dialect.name.lowercased()
+            let isPostgres = dialect.contains("postgres") || dialect.contains("psql")
+            let isMySQL = dialect.contains("mysql")
+
+            let colNames: Set<String>
+            if isPostgres || isMySQL {
+                struct InfoSchemaCol: Decodable {
+                    let column_name: String
+                }
+                let cols = try await sql.raw("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'password_reset_tokens'
+                """).all(decoding: InfoSchemaCol.self)
+                colNames = Set(cols.map { $0.column_name.lowercased() })
+            } else {
+                struct ColInfo: Decodable {
+                    let name: String
+                }
+                let cols = try await sql.raw("PRAGMA table_info(password_reset_tokens);").all(decoding: ColInfo.self)
+                colNames = Set(cols.map { $0.name.lowercased() })
+            }
+
+            // All hardened columns must be present
+            #expect(colNames.contains("code_hash"), "'code_hash' column must exist")
+            #expect(colNames.contains("session_token_hash"), "'session_token_hash' column must exist")
+            #expect(colNames.contains("code_expires_at"), "'code_expires_at' column must exist")
+            #expect(colNames.contains("session_expires_at"), "'session_expires_at' column must exist")
+            #expect(colNames.contains("created_at"), "'created_at' column must exist")
+        }
+    }
+
+    @Test("Password Reset Migration: Running migration twice is completely idempotent")
+    func testPasswordResetMigrationIdempotentRerunTwice() async throws {
+        try await withApp { app in
+            // Migration ran once during withApp (app.autoMigrate())
+            // Run prepare a second time directly
+            try await HardenPasswordResetTokens().prepare(on: app.db)
+            // Run prepare a third time
+            try await HardenPasswordResetTokens().prepare(on: app.db)
+
+            guard let sql = app.db as? any SQLDatabase else {
+                Issue.record("Test requires SQLDatabase")
+                return
+            }
+
+            let dialect = sql.dialect.name.lowercased()
+            let isPostgres = dialect.contains("postgres") || dialect.contains("psql")
+            let isMySQL = dialect.contains("mysql")
+
+            let colNames: Set<String>
+            if isPostgres || isMySQL {
+                struct InfoSchemaCol: Decodable {
+                    let column_name: String
+                }
+                let cols = try await sql.raw("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'password_reset_tokens'
+                """).all(decoding: InfoSchemaCol.self)
+                colNames = Set(cols.map { $0.column_name.lowercased() })
+            } else {
+                struct ColInfo: Decodable {
+                    let name: String
+                }
+                let cols = try await sql.raw("PRAGMA table_info(password_reset_tokens);").all(decoding: ColInfo.self)
+                colNames = Set(cols.map { $0.name.lowercased() })
+            }
+
+            #expect(colNames.contains("code_hash"))
+            #expect(colNames.contains("session_token_hash"))
+            #expect(colNames.contains("code_expires_at"))
+            #expect(colNames.contains("session_expires_at"))
+            #expect(colNames.contains("created_at"))
         }
     }
 
