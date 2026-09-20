@@ -179,11 +179,17 @@ struct AuthController: RouteCollection {
             return response // enumeration-safe: same response regardless
         }
 
-        let code = String(format: "%06d", Int.random(in: 0...999999))
+        // Invalidate all existing active reset tokens for this email to enforce single-active-request semantics
+        try await passwordResetRepository.invalidateAll(forEmail: normalizedEmail, on: req.db)
+
+        // Cryptographically secure random 6-digit OTP (CSPRNG with rejection sampling)
+        let code = PasswordResetSecurity.generateSecureOTP()
+        let secret = try AppConfig.loadPasswordResetSecret(for: req.application.environment)
+        let codeHash = PasswordResetSecurity.hashOTP(code, email: normalizedEmail, secret: secret)
 
         let resetToken = PasswordResetToken(
             email: student.email,
-            code: code,
+            codeHash: codeHash,
             codeExpiresAt: Date().addingTimeInterval(10 * 60)
         )
         try await passwordResetRepository.create(resetToken, on: req.db)
@@ -212,37 +218,47 @@ struct AuthController: RouteCollection {
     func verifyResetCode(_ req: Request) async throws -> VerifyResetCodeResponse {
         let request = try req.content.decode(VerifyResetCodeRequest.self)
         let normalizedEmail = request.email.lowercased().trimmingCharacters(in: .whitespaces)
+        let secret = try AppConfig.loadPasswordResetSecret(for: req.application.environment)
 
-        guard let resetToken = try await passwordResetRepository.findLatestActiveCode(forEmail: normalizedEmail, on: req.db) else {
-            return VerifyResetCodeResponse(success: false, message: "Invalid or expired code.", sessionToken: nil)
+        let outcome = try await passwordResetRepository.verifyOTPAndCreateSession(
+            email: normalizedEmail,
+            code: request.code,
+            secret: secret,
+            on: req.db
+        )
+
+        switch outcome {
+        case .success(let sessionToken):
+            return VerifyResetCodeResponse(
+                success: true,
+                message: "Code verified.",
+                sessionToken: sessionToken
+            )
+        case .invalidOrExpiredCode:
+            return VerifyResetCodeResponse(
+                success: false,
+                message: "Invalid or expired code.",
+                sessionToken: nil
+            )
+        case .expired:
+            return VerifyResetCodeResponse(
+                success: false,
+                message: "Code has expired. Please request a new one.",
+                sessionToken: nil
+            )
+        case .tooManyAttempts:
+            return VerifyResetCodeResponse(
+                success: false,
+                message: "Too many failed attempts. Please request a new code.",
+                sessionToken: nil
+            )
+        case .invalidCode:
+            return VerifyResetCodeResponse(
+                success: false,
+                message: "Invalid code.",
+                sessionToken: nil
+            )
         }
-
-        if resetToken.attempts >= 3 {
-            resetToken.used = true
-            try await passwordResetRepository.update(resetToken, on: req.db)
-            return VerifyResetCodeResponse(success: false, message: "Too many failed attempts. Please request a new code.", sessionToken: nil)
-        }
-
-        guard resetToken.codeExpiresAt > Date() else {
-            return VerifyResetCodeResponse(success: false, message: "Code has expired. Please request a new one.", sessionToken: nil)
-        }
-
-        guard resetToken.code == request.code else {
-            resetToken.attempts += 1
-            if resetToken.attempts >= 3 {
-                resetToken.used = true
-            }
-            try await passwordResetRepository.update(resetToken, on: req.db)
-            return VerifyResetCodeResponse(success: false, message: "Invalid code.", sessionToken: nil)
-        }
-
-        let sessionToken = [UInt8].random(count: 32).base64.replacingOccurrences(of: "/", with: "_")
-        resetToken.verified = true
-        resetToken.sessionToken = sessionToken
-        resetToken.sessionExpiresAt = Date().addingTimeInterval(15 * 60)
-        try await passwordResetRepository.update(resetToken, on: req.db)
-
-        return VerifyResetCodeResponse(success: true, message: "Code verified.", sessionToken: sessionToken)
     }
 
     // MARK: - Reset Password
@@ -259,23 +275,32 @@ struct AuthController: RouteCollection {
             throw Abort(.badRequest, reason: "Password must be at least 8 characters")
         }
 
-        guard let resetToken = try await passwordResetRepository.findVerifiedSession(forEmail: normalizedEmail, sessionToken: request.sessionToken, on: req.db) else {
-            throw Abort(.badRequest, reason: "Invalid or expired reset session")
+        let sessionTokenHash = PasswordResetSecurity.hashSessionToken(request.sessionToken)
+
+        // Transactionally coordinate:
+        // 1. Single-use atomic conditional consumption of the reset session (WHERE used = false)
+        // 2. Student password hash update
+        // 3. Complete revocation of all active refresh tokens for the student identity
+        try await req.db.transaction { db in
+            let consumed = try await passwordResetRepository.consumeSessionIfActive(
+                sessionTokenHash: sessionTokenHash,
+                email: normalizedEmail,
+                on: db
+            )
+            guard consumed else {
+                throw Abort(.badRequest, reason: "Invalid or expired reset session")
+            }
+
+            guard let student = try await studentRepository.find(byEmail: normalizedEmail, on: db) else {
+                throw Abort(.notFound, reason: "Account not found")
+            }
+
+            student.passwordHash = try Bcrypt.hash(request.newPassword)
+            try await studentRepository.update(student, on: db)
+
+            let studentID = try student.requireID()
+            try await tokenService.revokeAllSessions(for: studentID, on: db)
         }
-
-        guard let sessionExpiresAt = resetToken.sessionExpiresAt, sessionExpiresAt > Date() else {
-            throw Abort(.badRequest, reason: "Reset session has expired. Please start over.")
-        }
-
-        guard let student = try await studentRepository.find(byEmail: normalizedEmail, on: req.db) else {
-            throw Abort(.notFound, reason: "Account not found")
-        }
-
-        student.passwordHash = try Bcrypt.hash(request.newPassword)
-        try await studentRepository.update(student, on: req.db)
-
-        resetToken.used = true
-        try await passwordResetRepository.update(resetToken, on: req.db)
 
         return ResetPasswordResponse(success: true, message: "Password reset successfully")
     }

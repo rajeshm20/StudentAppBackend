@@ -201,6 +201,7 @@ private func configureMiddleware(_ app: Application) throws {
 private func configureJWT(_ app: Application) throws {
     let jwtSecret = try AppConfig.loadJWTSecret(for: app.environment)
     app.jwt.signers.use(.hs256(key: jwtSecret.data(using: .utf8)!))
+    _ = try AppConfig.loadPasswordResetSecret(for: app.environment)
 }
 
 private func configureEmail(_ app: Application) {
@@ -223,6 +224,7 @@ private func configureMigrations(_ app: Application) throws {
     // Phase 2: Role, status, firstName, lastName, countryCode, contactNumber (E.164), timestamps
     app.migrations.add(AddRoleStatusPhoneToStudents())
     app.migrations.add(CreateRefreshToken())
+    app.migrations.add(HardenPasswordResetTokens())
 
     if AppConfig.shouldAutoMigrate(in: app.environment) {
         app.logger.notice("AUTO_MIGRATE enabled — running migrations on startup")

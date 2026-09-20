@@ -1724,6 +1724,647 @@ struct StudentAppBackendTests {
         }
     }
 
+    // MARK: =========================================================
+    // MARK: - Password Reset Security Tests (P0)
+    // MARK: =========================================================
+
+    actor MockEmailCapturingService: EmailSending {
+        private var _lastBody: String?
+        private var _lastCode: String?
+
+        var lastCode: String? {
+            _lastCode
+        }
+
+        func send(to email: String, subject: String, body: String) async throws {
+            self._lastBody = body
+            if let range = body.range(of: "Your verification code is: ") {
+                let codePart = body[range.upperBound...].prefix(6)
+                self._lastCode = String(codePart)
+            }
+        }
+    }
+
+    @Test("Password Reset Security: OTP and session tokens are never stored in plaintext")
+    func testPasswordResetPlaintextNotStored() async throws {
+        try await withApp { app in
+            let mockEmail = MockEmailCapturingService()
+            app.emailService = mockEmail
+
+            // 1. Create a student
+            let email = "security_user@example.com"
+            let signupPayload = [
+                "name": "Security User",
+                "email": email,
+                "password": "Password123!",
+                "role": "student"
+            ]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(signupPayload)
+            })
+
+            // 2. Request forgot-password
+            try await app.testing().test(.POST, "auth/forgot-password", beforeRequest: { req in
+                try req.content.encode(["email": email])
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+            })
+
+            guard let capturedCode = await mockEmail.lastCode else {
+                Issue.record("Failed to capture OTP code from email service")
+                return
+            }
+            #expect(capturedCode.count == 6)
+
+            // 3. Inspect database: Confirm code is hashed and raw code is NOT stored
+            let resetTokenRow = try await PasswordResetToken.query(on: app.db)
+                .filter(\.$email == email)
+                .first()
+            #expect(resetTokenRow != nil)
+            #expect(resetTokenRow?.codeHash != capturedCode) // Must NOT be plaintext
+            let expectedHash = PasswordResetSecurity.hashOTP(capturedCode, email: email)
+            #expect(resetTokenRow?.codeHash == expectedHash)
+
+            // 4. Verify code and receive session token
+            var returnedSessionToken: String?
+            try await app.testing().test(.POST, "auth/verify-reset-code", beforeRequest: { req in
+                try req.content.encode(["email": email, "code": capturedCode])
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(VerifyResetCodeResponse.self)
+                #expect(body.success == true)
+                returnedSessionToken = body.sessionToken
+            })
+
+            guard let rawSessionToken = returnedSessionToken else {
+                Issue.record("Failed to receive sessionToken")
+                return
+            }
+            #expect(rawSessionToken.count >= 32)
+
+            // 5. Inspect database: Confirm session token is stored hashed and NOT plaintext
+            let verifiedTokenRow = try await PasswordResetToken.query(on: app.db)
+                .filter(\.$email == email)
+                .first()
+            #expect(verifiedTokenRow?.verified == true)
+            #expect(verifiedTokenRow?.sessionTokenHash != rawSessionToken)
+            let expectedSessionHash = PasswordResetSecurity.hashSessionToken(rawSessionToken)
+            #expect(verifiedTokenRow?.sessionTokenHash == expectedSessionHash)
+        }
+    }
+
+    @Test("Password Reset Security: Requesting a new code invalidates prior reset tokens")
+    func testPasswordResetInvalidatesPriorTokens() async throws {
+        try await withApp { app in
+            let mockEmail = MockEmailCapturingService()
+            app.emailService = mockEmail
+
+            let email = "invalidate_user@example.com"
+            let signupPayload = [
+                "name": "Invalidate User",
+                "email": email,
+                "password": "Password123!",
+                "role": "student"
+            ]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(signupPayload)
+            })
+
+            // 1. Request first code
+            try await app.testing().test(.POST, "auth/forgot-password", beforeRequest: { req in
+                try req.content.encode(["email": email])
+            })
+            guard let firstCode = await mockEmail.lastCode else {
+                Issue.record("No first code captured")
+                return
+            }
+
+            // 2. Request second code
+            try await app.testing().test(.POST, "auth/forgot-password", beforeRequest: { req in
+                try req.content.encode(["email": email])
+            })
+            guard let secondCode = await mockEmail.lastCode else {
+                Issue.record("No second code captured")
+                return
+            }
+
+            // 3. Attempting to verify the first code must fail because it was invalidated
+            try await app.testing().test(.POST, "auth/verify-reset-code", beforeRequest: { req in
+                try req.content.encode(["email": email, "code": firstCode])
+            }, afterResponse: { res async throws in
+                let body = try res.content.decode(VerifyResetCodeResponse.self)
+                #expect(body.success == false)
+            })
+
+            // 4. Verifying the second code must succeed
+            try await app.testing().test(.POST, "auth/verify-reset-code", beforeRequest: { req in
+                try req.content.encode(["email": email, "code": secondCode])
+            }, afterResponse: { res async throws in
+                let body = try res.content.decode(VerifyResetCodeResponse.self)
+                #expect(body.success == true)
+                #expect(body.sessionToken != nil)
+            })
+        }
+    }
+
+    @Test("Password Reset Security: 3 failed attempts invalidates the reset token")
+    func testPasswordResetMaxAttemptsEnforced() async throws {
+        try await withApp { app in
+            let mockEmail = MockEmailCapturingService()
+            app.emailService = mockEmail
+
+            let email = "attempts_user@example.com"
+            let signupPayload = [
+                "name": "Attempts User",
+                "email": email,
+                "password": "Password123!",
+                "role": "student"
+            ]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(signupPayload)
+            })
+
+            try await app.testing().test(.POST, "auth/forgot-password", beforeRequest: { req in
+                try req.content.encode(["email": email])
+            })
+            guard let correctCode = await mockEmail.lastCode else {
+                Issue.record("No code captured")
+                return
+            }
+
+            // Attempt 1: wrong code
+            try await app.testing().test(.POST, "auth/verify-reset-code", beforeRequest: { req in
+                try req.content.encode(["email": email, "code": "000000"])
+            }, afterResponse: { res async throws in
+                let body = try res.content.decode(VerifyResetCodeResponse.self)
+                #expect(body.success == false)
+                #expect(body.message.contains("Invalid code"))
+            })
+
+            // Attempt 2: wrong code
+            try await app.testing().test(.POST, "auth/verify-reset-code", beforeRequest: { req in
+                try req.content.encode(["email": email, "code": "000001"])
+            }, afterResponse: { res async throws in
+                let body = try res.content.decode(VerifyResetCodeResponse.self)
+                #expect(body.success == false)
+                #expect(body.message.contains("Invalid code"))
+            })
+
+            // Attempt 3: wrong code -> locks
+            try await app.testing().test(.POST, "auth/verify-reset-code", beforeRequest: { req in
+                try req.content.encode(["email": email, "code": "000002"])
+            }, afterResponse: { res async throws in
+                let body = try res.content.decode(VerifyResetCodeResponse.self)
+                #expect(body.success == false)
+                #expect(body.message.contains("Too many failed attempts"))
+            })
+
+            // Confirm database record is permanently marked used = true with attempts = 3
+            let tokenInDb = try await PasswordResetToken.query(on: app.db)
+                .filter(\.$email == email)
+                .first()
+            #expect(tokenInDb != nil)
+            #expect(tokenInDb?.attempts == 3)
+            #expect(tokenInDb?.used == true, "Token must be invalidated after 3 failed attempts")
+        }
+    }
+
+    @Test("Password Reset Transactional: Concurrent reset requests with same session token result in exactly one success")
+    func testPasswordResetConcurrentRequests() async throws {
+        try await withApp { app in
+            let mockEmail = MockEmailCapturingService()
+            app.emailService = mockEmail
+
+            let email = "concurrent_reset@example.com"
+            let initialPassword = "InitialPassword123!"
+            let signupPayload = [
+                "name": "Concurrent Reset User",
+                "email": email,
+                "password": initialPassword,
+                "role": "student"
+            ]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(signupPayload)
+            })
+
+            // Log in to acquire a refresh token
+            var activeRefreshToken: String?
+            try await app.testing().test(.POST, "auth/login", beforeRequest: { req in
+                try req.content.encode(["email": email, "password": initialPassword])
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(FullLoginResponseTest.self)
+                activeRefreshToken = body.tokens?.refreshToken
+            })
+            guard let initialRefreshToken = activeRefreshToken else {
+                Issue.record("No initial refresh token obtained")
+                return
+            }
+
+            // Request forgot password and verify
+            try await app.testing().test(.POST, "auth/forgot-password", beforeRequest: { req in
+                try req.content.encode(["email": email])
+            })
+            guard let otpCode = await mockEmail.lastCode else {
+                Issue.record("No code captured")
+                return
+            }
+
+            var verifiedSessionToken: String?
+            try await app.testing().test(.POST, "auth/verify-reset-code", beforeRequest: { req in
+                try req.content.encode(["email": email, "code": otpCode])
+            }, afterResponse: { res async throws in
+                let body = try res.content.decode(VerifyResetCodeResponse.self)
+                verifiedSessionToken = body.sessionToken
+            })
+            guard let sessionToken = verifiedSessionToken else {
+                Issue.record("No session token obtained")
+                return
+            }
+
+            // Execute concurrent resetPassword requests with the same session token
+            let concurrency = 5
+            let results = await withTaskGroup(of: HTTPStatus.self, returning: [HTTPStatus].self) { group in
+                for i in 0..<concurrency {
+                    group.addTask {
+                        var status: HTTPStatus = .internalServerError
+                        do {
+                            try await app.testing().test(.POST, "auth/reset-password", beforeRequest: { req in
+                                try req.content.encode([
+                                    "email": email,
+                                    "sessionToken": sessionToken,
+                                    "newPassword": "NewPassword\(i)123!",
+                                    "confirmPassword": "NewPassword\(i)123!"
+                                ])
+                            }, afterResponse: { res async in
+                                status = res.status
+                            })
+                        } catch {
+                            status = .internalServerError
+                        }
+                        return status
+                    }
+                }
+                var list: [HTTPStatus] = []
+                for await s in group {
+                    list.append(s)
+                }
+                return list
+            }
+
+            let successCount = results.filter { $0 == .ok }.count
+            let badRequestCount = results.filter { $0 == .badRequest }.count
+            #expect(successCount == 1, "Exactly one reset request must succeed")
+            #expect(badRequestCount == concurrency - 1, "All duplicate concurrent attempts must fail with 400 Bad Request")
+
+            // Verify that all active refresh tokens for this student were revoked as part of the reset transaction
+            try await app.testing().test(.POST, "auth/refresh", beforeRequest: { req in
+                try req.content.encode(["refreshToken": initialRefreshToken])
+            }, afterResponse: { res async in
+                #expect(res.status == .unauthorized, "Refresh token must be revoked after password reset")
+            })
+        }
+    }
+
+    // MARK: - Password Reset Hardening & Concurrency Tests
+
+    @Test("Password Reset Security: Dedicated HMAC secret validation in production and non-production")
+    func testPasswordResetSecretConfiguration() throws {
+        unsetenv("PASSWORD_RESET_HMAC_SECRET")
+
+        // 1. Missing secret in production must fail startup / validation
+        #expect(throws: Abort.self) {
+            try AppConfig.loadPasswordResetSecret(for: .production)
+        }
+
+        // 2. Secret shorter than 32 characters in production must fail
+        setenv("PASSWORD_RESET_HMAC_SECRET", "short-secret", 1)
+        #expect(throws: Abort.self) {
+            try AppConfig.loadPasswordResetSecret(for: .production)
+        }
+
+        // 3. Valid secret (>= 32 characters) in production succeeds
+        setenv("PASSWORD_RESET_HMAC_SECRET", "a-sufficiently-long-secret-key-32-chars-long", 1)
+        let prodSecret = try AppConfig.loadPasswordResetSecret(for: .production)
+        #expect(prodSecret == "a-sufficiently-long-secret-key-32-chars-long")
+
+        // 4. In testing, fallback succeeds even without environment variable
+        unsetenv("PASSWORD_RESET_HMAC_SECRET")
+        let testSecret = try AppConfig.loadPasswordResetSecret(for: .testing)
+        #expect(!testSecret.isEmpty)
+        #expect(testSecret.count >= 32)
+    }
+
+    @Test("Password Reset Migration: Legacy plaintext columns are dropped and existing tokens invalidated")
+    func testPasswordResetMigrationDropsLegacyColumnsAndInvalidatesRows() async throws {
+        try await withApp { app in
+            guard let sql = app.db as? any SQLDatabase else {
+                Issue.record("Test requires SQLDatabase")
+                return
+            }
+
+            // Create a legacy table with old plaintext schema
+            try await sql.raw("DROP TABLE IF EXISTS legacy_password_reset_tokens;").run()
+            try await sql.raw("""
+                CREATE TABLE legacy_password_reset_tokens (
+                    id VARCHAR(255) PRIMARY KEY,
+                    email VARCHAR(255) NOT NULL,
+                    code VARCHAR(255) NOT NULL,
+                    sessionToken VARCHAR(255),
+                    codeExpiresAt VARCHAR(255) NOT NULL,
+                    sessionExpiresAt VARCHAR(255),
+                    verified INTEGER NOT NULL DEFAULT 0,
+                    used INTEGER NOT NULL DEFAULT 0,
+                    attempts INTEGER NOT NULL DEFAULT 0
+                );
+            """).run()
+
+            // Insert a legacy record with plaintext secrets
+            let legacyId = UUID().uuidString
+            let legacyEmail = "legacy_user@example.com"
+            try await sql.raw("""
+                INSERT INTO legacy_password_reset_tokens (id, email, code, sessionToken, codeExpiresAt, verified, used, attempts)
+                VALUES (\(bind: legacyId), \(bind: legacyEmail), '123456', 'plaintext-session-token', '2030-01-01T00:00:00Z', 0, 0, 0);
+            """).run()
+
+            // Rename to password_reset_tokens for migration testing
+            try await sql.raw("DROP TABLE IF EXISTS password_reset_tokens;").run()
+            try await sql.raw("ALTER TABLE legacy_password_reset_tokens RENAME TO password_reset_tokens;").run()
+
+            // Run HardenPasswordResetTokens migration
+            try await HardenPasswordResetTokens().prepare(on: app.db)
+
+            // Inspect columns across SQLite, PostgreSQL, and MySQL
+            let dialect = sql.dialect.name.lowercased()
+            let isPostgres = dialect.contains("postgres") || dialect.contains("psql")
+            let isMySQL = dialect.contains("mysql")
+
+            let colNames: Set<String>
+            if isPostgres || isMySQL {
+                struct InfoSchemaCol: Decodable {
+                    let column_name: String
+                }
+                let cols = try await sql.raw("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'password_reset_tokens'
+                """).all(decoding: InfoSchemaCol.self)
+                colNames = Set(cols.map { $0.column_name.lowercased() })
+            } else {
+                struct ColInfo: Decodable {
+                    let name: String
+                }
+                let cols = try await sql.raw("PRAGMA table_info(password_reset_tokens);").all(decoding: ColInfo.self)
+                colNames = Set(cols.map { $0.name.lowercased() })
+            }
+
+            // Legacy plaintext columns must be gone
+            #expect(!colNames.contains("code"), "Legacy 'code' column must be dropped")
+            #expect(!colNames.contains("sessiontoken"), "Legacy 'sessionToken' column must be dropped")
+            #expect(!colNames.contains("codeexpiresat"), "Legacy 'codeExpiresAt' column must be dropped")
+            #expect(!colNames.contains("sessionexpiresat"), "Legacy 'sessionExpiresAt' column must be dropped")
+
+            // New hardened columns must be present
+            #expect(colNames.contains("code_hash"), "'code_hash' column must exist")
+            #expect(colNames.contains("session_token_hash"), "'session_token_hash' column must exist")
+            #expect(colNames.contains("code_expires_at"), "'code_expires_at' column must exist")
+            #expect(colNames.contains("session_expires_at"), "'session_expires_at' column must exist")
+            #expect(colNames.contains("created_at"), "'created_at' column must exist")
+
+            // Existing rows must be invalidated (used = true / 1)
+            let rows = try await sql.raw("SELECT used FROM password_reset_tokens WHERE id = \(bind: legacyId);").all()
+            guard let firstRow = rows.first else {
+                Issue.record("Legacy token row was unexpectedly removed or not found")
+                return
+            }
+            let isUsed: Bool = (try? firstRow.decode(column: "used", as: Bool.self)) ?? ((try? firstRow.decode(column: "used", as: Int.self)) == 1)
+            #expect(isUsed, "Legacy token rows must be invalidated on migration")
+        }
+    }
+
+    @Test("Password Reset Migration: Recovers from partially migrated schema with only code_hash present")
+    func testPasswordResetMigrationRecoversFromPartialSchemaWithOnlyCodeHash() async throws {
+        try await withApp { app in
+            guard let sql = app.db as? any SQLDatabase else {
+                Issue.record("Test requires SQLDatabase")
+                return
+            }
+
+            // Simulate interrupted migration: table has only code_hash, but missing all other hardened columns
+            try await sql.raw("DROP TABLE IF EXISTS partial_password_reset_tokens;").run()
+            try await sql.raw("""
+                CREATE TABLE partial_password_reset_tokens (
+                    id VARCHAR(255) PRIMARY KEY,
+                    email VARCHAR(255) NOT NULL,
+                    code_hash VARCHAR(255),
+                    verified INTEGER NOT NULL DEFAULT 0,
+                    used INTEGER NOT NULL DEFAULT 0,
+                    attempts INTEGER NOT NULL DEFAULT 0
+                );
+            """).run()
+
+            try await sql.raw("DROP TABLE IF EXISTS password_reset_tokens;").run()
+            try await sql.raw("ALTER TABLE partial_password_reset_tokens RENAME TO password_reset_tokens;").run()
+
+            // Run migration
+            try await HardenPasswordResetTokens().prepare(on: app.db)
+
+            // Inspect columns
+            let dialect = sql.dialect.name.lowercased()
+            let isPostgres = dialect.contains("postgres") || dialect.contains("psql")
+            let isMySQL = dialect.contains("mysql")
+
+            let colNames: Set<String>
+            if isPostgres || isMySQL {
+                struct InfoSchemaCol: Decodable {
+                    let column_name: String
+                }
+                let cols = try await sql.raw("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'password_reset_tokens'
+                """).all(decoding: InfoSchemaCol.self)
+                colNames = Set(cols.map { $0.column_name.lowercased() })
+            } else {
+                struct ColInfo: Decodable {
+                    let name: String
+                }
+                let cols = try await sql.raw("PRAGMA table_info(password_reset_tokens);").all(decoding: ColInfo.self)
+                colNames = Set(cols.map { $0.name.lowercased() })
+            }
+
+            // All hardened columns must now be present
+            #expect(colNames.contains("code_hash"), "'code_hash' column must exist")
+            #expect(colNames.contains("session_token_hash"), "'session_token_hash' column must exist")
+            #expect(colNames.contains("code_expires_at"), "'code_expires_at' column must exist")
+            #expect(colNames.contains("session_expires_at"), "'session_expires_at' column must exist")
+            #expect(colNames.contains("created_at"), "'created_at' column must exist")
+        }
+    }
+
+    @Test("Password Reset Migration: Recovers from arbitrary subset of hardened columns")
+    func testPasswordResetMigrationRecoversFromArbitrarySubsetOfColumns() async throws {
+        try await withApp { app in
+            guard let sql = app.db as? any SQLDatabase else {
+                Issue.record("Test requires SQLDatabase")
+                return
+            }
+
+            // Simulate interrupted migration: table has code_hash and created_at, but missing session_token_hash, code_expires_at, session_expires_at
+            try await sql.raw("DROP TABLE IF EXISTS partial_subset_reset_tokens;").run()
+            try await sql.raw("""
+                CREATE TABLE partial_subset_reset_tokens (
+                    id VARCHAR(255) PRIMARY KEY,
+                    email VARCHAR(255) NOT NULL,
+                    code_hash VARCHAR(255),
+                    created_at VARCHAR(255),
+                    verified INTEGER NOT NULL DEFAULT 0,
+                    used INTEGER NOT NULL DEFAULT 0,
+                    attempts INTEGER NOT NULL DEFAULT 0
+                );
+            """).run()
+
+            try await sql.raw("DROP TABLE IF EXISTS password_reset_tokens;").run()
+            try await sql.raw("ALTER TABLE partial_subset_reset_tokens RENAME TO password_reset_tokens;").run()
+
+            // Run migration
+            try await HardenPasswordResetTokens().prepare(on: app.db)
+
+            // Inspect columns
+            let dialect = sql.dialect.name.lowercased()
+            let isPostgres = dialect.contains("postgres") || dialect.contains("psql")
+            let isMySQL = dialect.contains("mysql")
+
+            let colNames: Set<String>
+            if isPostgres || isMySQL {
+                struct InfoSchemaCol: Decodable {
+                    let column_name: String
+                }
+                let cols = try await sql.raw("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'password_reset_tokens'
+                """).all(decoding: InfoSchemaCol.self)
+                colNames = Set(cols.map { $0.column_name.lowercased() })
+            } else {
+                struct ColInfo: Decodable {
+                    let name: String
+                }
+                let cols = try await sql.raw("PRAGMA table_info(password_reset_tokens);").all(decoding: ColInfo.self)
+                colNames = Set(cols.map { $0.name.lowercased() })
+            }
+
+            // All hardened columns must be present
+            #expect(colNames.contains("code_hash"), "'code_hash' column must exist")
+            #expect(colNames.contains("session_token_hash"), "'session_token_hash' column must exist")
+            #expect(colNames.contains("code_expires_at"), "'code_expires_at' column must exist")
+            #expect(colNames.contains("session_expires_at"), "'session_expires_at' column must exist")
+            #expect(colNames.contains("created_at"), "'created_at' column must exist")
+        }
+    }
+
+    @Test("Password Reset Migration: Running migration twice is completely idempotent")
+    func testPasswordResetMigrationIdempotentRerunTwice() async throws {
+        try await withApp { app in
+            // Migration ran once during withApp (app.autoMigrate())
+            // Run prepare a second time directly
+            try await HardenPasswordResetTokens().prepare(on: app.db)
+            // Run prepare a third time
+            try await HardenPasswordResetTokens().prepare(on: app.db)
+
+            guard let sql = app.db as? any SQLDatabase else {
+                Issue.record("Test requires SQLDatabase")
+                return
+            }
+
+            let dialect = sql.dialect.name.lowercased()
+            let isPostgres = dialect.contains("postgres") || dialect.contains("psql")
+            let isMySQL = dialect.contains("mysql")
+
+            let colNames: Set<String>
+            if isPostgres || isMySQL {
+                struct InfoSchemaCol: Decodable {
+                    let column_name: String
+                }
+                let cols = try await sql.raw("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'password_reset_tokens'
+                """).all(decoding: InfoSchemaCol.self)
+                colNames = Set(cols.map { $0.column_name.lowercased() })
+            } else {
+                struct ColInfo: Decodable {
+                    let name: String
+                }
+                let cols = try await sql.raw("PRAGMA table_info(password_reset_tokens);").all(decoding: ColInfo.self)
+                colNames = Set(cols.map { $0.name.lowercased() })
+            }
+
+            #expect(colNames.contains("code_hash"))
+            #expect(colNames.contains("session_token_hash"))
+            #expect(colNames.contains("code_expires_at"))
+            #expect(colNames.contains("session_expires_at"))
+            #expect(colNames.contains("created_at"))
+        }
+    }
+
+    @Test("Password Reset Security: Concurrent OTP verification requests result in exactly one successful session")
+    func testPasswordResetConcurrentOTPVerification() async throws {
+        try await withApp { app in
+            let mockEmail = MockEmailCapturingService()
+            app.emailService = mockEmail
+
+            let email = "concurrent_otp@example.com"
+            let signupPayload = [
+                "name": "Concurrent OTP User",
+                "email": email,
+                "password": "Password123!",
+                "role": "student"
+            ]
+            try await app.testing().test(.POST, "auth/signup", beforeRequest: { req in
+                try req.content.encode(signupPayload)
+            })
+
+            // Request OTP code
+            try await app.testing().test(.POST, "auth/forgot-password", beforeRequest: { req in
+                try req.content.encode(["email": email])
+            })
+            guard let otpCode = await mockEmail.lastCode else {
+                Issue.record("No OTP code captured")
+                return
+            }
+
+            // Launch 5 concurrent verification attempts with the correct OTP
+            let concurrency = 5
+            let results: [VerifyResetCodeResponse] = try await withThrowingTaskGroup(of: VerifyResetCodeResponse.self) { group in
+                for i in 0..<concurrency {
+                    group.addTask {
+                        var response: VerifyResetCodeResponse?
+                        try await app.testing().test(.POST, "auth/verify-reset-code", beforeRequest: { req in
+                            req.headers.replaceOrAdd(name: "X-Forwarded-For", value: "10.0.0.\(i + 1)")
+                            try req.content.encode(["email": email, "code": otpCode])
+                        }, afterResponse: { res async throws in
+                            #expect(res.status == .ok)
+                            response = try res.content.decode(VerifyResetCodeResponse.self)
+                        })
+                        return response ?? VerifyResetCodeResponse(success: false, message: "No response", sessionToken: nil)
+                    }
+                }
+
+                var list = [VerifyResetCodeResponse]()
+                for try await r in group {
+                    list.append(r)
+                }
+                return list
+            }
+
+            let successCount = results.filter { $0.success == true }.count
+            let failCount = results.filter { $0.success == false }.count
+            #expect(successCount == 1, "Exactly one concurrent verification request must succeed and receive a session token")
+            #expect(failCount == concurrency - 1, "All duplicate concurrent verification requests must fail")
+        }
+    }
+
     // MARK: - TLS and Cipher Suite Tests
 
     @Test("TLS: Default minimum TLS version is TLS 1.2")
