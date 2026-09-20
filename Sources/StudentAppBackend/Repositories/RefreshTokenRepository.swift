@@ -164,21 +164,13 @@ struct DatabaseRefreshTokenRepository: RefreshTokenRepository {
     ///    - Token expired -> `.expired(token)`
     func consumeIfActive(byHash tokenHash: String, on db: any Database) async throws -> RefreshTokenConsumeResult {
         guard let sql = db as? any SQLDatabase else {
-            // Fallback for non-SQL drivers
-            guard let token = try await find(byHash: tokenHash, on: db) else {
-                return .notFound
-            }
-            guard !token.isRevoked else {
-                return .alreadyRevoked(userID: token.$user.id)
-            }
-            if token.expiresAt <= Date() {
-                token.isRevoked = true
-                try await update(token, on: db)
-                return .expired(token)
-            }
-            token.isRevoked = true
-            try await update(token, on: db)
-            return .consumed(token)
+            // Secure Enterprise Guarantee: Single-use refresh token rotation requires atomic
+            // conditional updates supported by SQLDatabase drivers (PostgreSQL, MySQL, SQLite).
+            // A non-atomic read-then-save cannot guarantee replay protection and is intentionally rejected.
+            throw Abort(
+                .internalServerError,
+                reason: "Atomic refresh token consumption requires an SQLDatabase-compatible driver (PostgreSQL, MySQL, SQLite)."
+            )
         }
 
         let now = Date()

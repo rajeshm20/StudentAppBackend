@@ -4,7 +4,9 @@
 // Tests are serialized to prevent race conditions on shared test state.
 
 import Fluent
+import FluentPostgresDriver
 import NIOSSL
+import SQLKit
 import Testing
 import Vapor
 import VaporTesting
@@ -36,32 +38,60 @@ struct StudentAppBackendTests {
 
     // MARK: - Production Database (PostgreSQL) Test Harness
 
-    private static func isPostgresReachable(host: String = "localhost", port: Int = 5432) -> Bool {
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = in_port_t(port).bigEndian
-        inet_pton(AF_INET, host == "localhost" ? "127.0.0.1" : host, &addr.sin_addr)
-
-        let sock = socket(AF_INET, SOCK_STREAM, 0)
-        guard sock >= 0 else { return false }
-        defer { close(sock) }
-
-        var tv = timeval(tv_sec: 1, tv_usec: 0)
-        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-
-        return withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+    private static func isPostgresReachable(
+        host: String,
+        port: Int,
+        user: String,
+        password: String,
+        database: String
+    ) async -> Bool {
+        guard let app = try? await Application.make(.testing) else { return false }
+        let config = SQLPostgresConfiguration(
+            hostname: host,
+            port: port,
+            username: user,
+            password: password,
+            database: database,
+            tls: .disable
+        )
+        app.databases.use(.postgres(configuration: config, maxConnectionsPerEventLoop: 1), as: .psql, isDefault: true)
+        let reachable: Bool
+        do {
+            if let sql = app.db as? any SQLDatabase {
+                try await sql.raw("SELECT 1").run()
+                reachable = true
+            } else {
+                reachable = false
             }
+        } catch {
+            reachable = false
         }
+        try? await app.asyncShutdown()
+        return reachable
     }
 
     private func withPostgresApp(_ test: (Application) async throws -> Void) async throws {
         let host = Environment.get("DATABASE_HOST") ?? "localhost"
         let port = Environment.get("DATABASE_PORT").flatMap(Int.init) ?? 5432
-        guard Self.isPostgresReachable(host: host, port: port) else {
-            print("PostgreSQL not reachable on \(host):\(port), skipping PostgreSQL-specific test")
+        let dbName = Environment.get("TEST_DATABASE_NAME") ?? Environment.get("DATABASE_NAME") ?? "student_db"
+        let user = Environment.get("DATABASE_USER") ?? "studentapp"
+        let password = Environment.get("DATABASE_PASSWORD") ?? "local-dev-db-password-not-for-prod"
+
+        let isReachable = await Self.isPostgresReachable(
+            host: host,
+            port: port,
+            user: user,
+            password: password,
+            database: dbName
+        )
+
+        let isCI = Environment.get("CI") != nil || Environment.get("GITHUB_ACTIONS") != nil || Environment.get("TEST_USE_EXTERNAL_DB") == "true"
+        if !isReachable {
+            if isCI {
+                Issue.record("PostgreSQL database is required in CI on \(host):\(port)/\(dbName) but could not be reached.")
+            } else {
+                print("PostgreSQL not reachable on \(host):\(port)/\(dbName), skipping PostgreSQL concurrency test locally.")
+            }
             return
         }
 
@@ -69,9 +99,46 @@ struct StudentAppBackendTests {
         setenv("DB_DRIVER", "postgres", 1)
         setenv("DATABASE_HOST", host, 1)
         setenv("DATABASE_PORT", "\(port)", 1)
-        setenv("DATABASE_NAME", Environment.get("TEST_DATABASE_NAME") ?? "student_test_db", 1)
-        setenv("DATABASE_USER", Environment.get("DATABASE_USER") ?? "studentapp", 1)
-        setenv("DATABASE_PASSWORD", Environment.get("DATABASE_PASSWORD") ?? "local-dev-db-password-not-for-prod", 1)
+        setenv("DATABASE_NAME", dbName, 1)
+        setenv("DATABASE_USER", user, 1)
+        setenv("DATABASE_PASSWORD", password, 1)
+        setenv("DATABASE_TLS_MODE", "disable", 1)
+
+        let app = try await Application.make(.testing)
+        do {
+            try configure(app)
+            try await app.autoMigrate()
+            try await test(app)
+            try await app.autoRevert()
+        } catch {
+            try? await app.autoRevert()
+            try await app.asyncShutdown()
+            unsetenv("TEST_USE_EXTERNAL_DB")
+            throw error
+        }
+        unsetenv("TEST_USE_EXTERNAL_DB")
+        try await app.asyncShutdown()
+    }
+
+    // MARK: - Production Database (MySQL) Test Harness
+
+    private func withMySQLApp(_ test: (Application) async throws -> Void) async throws {
+        guard let host = Environment.get("MYSQL_HOST"), !host.isEmpty else {
+            print("MYSQL_HOST not set, skipping MySQL concurrency test.")
+            return
+        }
+        let port = Environment.get("MYSQL_PORT").flatMap(Int.init) ?? 3306
+        let dbName = Environment.get("MYSQL_DATABASE") ?? "student_db"
+        let user = Environment.get("MYSQL_USER") ?? "root"
+        let password = Environment.get("MYSQL_PASSWORD") ?? ""
+
+        setenv("TEST_USE_EXTERNAL_DB", "true", 1)
+        setenv("DB_DRIVER", "mysql", 1)
+        setenv("DATABASE_HOST", host, 1)
+        setenv("DATABASE_PORT", "\(port)", 1)
+        setenv("DATABASE_NAME", dbName, 1)
+        setenv("DATABASE_USER", user, 1)
+        setenv("DATABASE_PASSWORD", password, 1)
         setenv("DATABASE_TLS_MODE", "disable", 1)
 
         let app = try await Application.make(.testing)
@@ -2948,6 +3015,64 @@ struct StudentAppBackendTests {
         try await withPostgresApp { app in
             _ = try await registerStudent(email: "pg_concurrent@example.com", on: app)
             let loginPayload = ["email": "pg_concurrent@example.com", "password": "secret123"]
+            var refreshToken = ""
+
+            try await app.testing().test(
+                .POST, "auth/login",
+                beforeRequest: { req in
+                    try req.content.encode(loginPayload)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let fullResponse = try res.content.decode(FullLoginResponseTest.self)
+                    refreshToken = fullResponse.tokens?.refreshToken ?? ""
+                }
+            )
+            #expect(!refreshToken.isEmpty)
+            let tokenToRefresh = refreshToken
+
+            async let req1: HTTPStatus = {
+                var status: HTTPStatus = .internalServerError
+                try await app.testing().test(
+                    .POST, "auth/refresh",
+                    beforeRequest: { req in
+                        try req.content.encode(["refreshToken": tokenToRefresh])
+                    },
+                    afterResponse: { res async in
+                        status = res.status
+                    }
+                )
+                return status
+            }()
+
+            async let req2: HTTPStatus = {
+                var status: HTTPStatus = .internalServerError
+                try await app.testing().test(
+                    .POST, "auth/refresh",
+                    beforeRequest: { req in
+                        try req.content.encode(["refreshToken": tokenToRefresh])
+                    },
+                    afterResponse: { res async in
+                        status = res.status
+                    }
+                )
+                return status
+            }()
+
+            let statuses = try await [req1, req2]
+            let okCount = statuses.filter { $0 == .ok }.count
+            let unauthorizedCount = statuses.filter { $0 == .unauthorized }.count
+
+            #expect(okCount == 1)
+            #expect(unauthorizedCount == 1)
+        }
+    }
+
+    @Test("Production database (MySQL): Concurrent refresh requests with the same token result in only one successful rotation")
+    func testMySQLConcurrentRefreshRequests() async throws {
+        try await withMySQLApp { app in
+            _ = try await registerStudent(email: "mysql_concurrent@example.com", on: app)
+            let loginPayload = ["email": "mysql_concurrent@example.com", "password": "secret123"]
             var refreshToken = ""
 
             try await app.testing().test(

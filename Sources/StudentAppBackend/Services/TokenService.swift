@@ -178,6 +178,16 @@ struct TokenService: TokenServiceProtocol {
     }
 
     func revokeAllSessions(for studentID: UUID, on db: any Database) async throws {
+        if db.inTransaction {
+            try await performRevocation(for: studentID, on: db)
+        } else {
+            try await db.transaction { tx in
+                try await self.performRevocation(for: studentID, on: tx)
+            }
+        }
+    }
+
+    private func performRevocation(for studentID: UUID, on db: any Database) async throws {
         if let sql = db as? (any SQLDatabase) {
             _ = try await sql.select()
                 .column("id")
@@ -186,7 +196,7 @@ struct TokenService: TokenServiceProtocol {
                 .for(.update)
                 .all()
         }
-        try await refreshTokenRepository.revokeAll(forUserID: studentID, on: db)
+        try await self.refreshTokenRepository.revokeAll(forUserID: studentID, on: db)
     }
 
     func cleanupExpiredTokens(on db: any Database) async throws -> Int {

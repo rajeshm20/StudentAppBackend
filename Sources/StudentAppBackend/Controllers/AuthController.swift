@@ -292,11 +292,14 @@ struct AuthController: RouteCollection {
 
         let studentID = try student.requireID()
 
-        // 1. Revoke the active JWT access token
-        try await TokenService.revokeToken(payload, on: req.db)
+        // Atomically coordinate access-token revocation and session-family revocation inside an enclosing transaction
+        try await req.db.transaction { db in
+            // 1. Revoke the active JWT access token
+            try await TokenService.revokeToken(payload, on: db)
 
-        // 2. Revoke all active refresh tokens for this user identity
-        try await tokenService.revokeAllSessions(for: studentID, on: req.db)
+            // 2. Revoke all active refresh tokens for this user identity (holding user row lock)
+            try await self.tokenService.revokeAllSessions(for: studentID, on: db)
+        }
 
         return LogoutResponse(message: "Logout successful")
     }
