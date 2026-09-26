@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "StudentAppBackend",
+    name: "OpenEdCore",
     platforms: [
        .macOS(.v13)
     ],
@@ -32,7 +32,7 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "StudentAppBackend",
+            name: "OpenEdCore",
             dependencies: [
                 .product(name: "Fluent", package: "fluent"),
                 .product(name: "FluentPostgresDriver", package: "fluent-postgres-driver"),
@@ -51,9 +51,9 @@ let package = Package(
             swiftSettings: swiftSettings
         ),
         .testTarget(
-            name: "StudentAppBackendTests",
+            name: "OpenEdCoreTests",
             dependencies: [
-                .target(name: "StudentAppBackend"),
+                .target(name: "OpenEdCore"),
                 .product(name: "VaporTesting", package: "vapor"),
             ],
             swiftSettings: swiftSettings

@@ -12,7 +12,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/studentappbackend
+  IMAGE_NAME: ${{ github.repository_owner }}/openedcore
 
 jobs:
   test:

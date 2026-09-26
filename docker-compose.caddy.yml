@@ -1,6 +1,6 @@
 services:
   app:
-    image: ghcr.io/rajeshm20/studentappbackend:latest
+    image: ghcr.io/rajeshm20/openedcore:latest
     restart: unless-stopped
     environment:
       LOG_LEVEL: ${LOG_LEVEL:-info}
