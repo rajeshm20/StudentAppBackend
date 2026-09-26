@@ -25,7 +25,7 @@ def make_request(url, api_key, method="GET", data=None):
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Accept": "application/json",
-        "User-Agent": "StudentAppBackend-CI/1.0",
+        "User-Agent": "OpenEdCore-CI/1.0",
     }
     encoded_data = None
     if data is not None:
@@ -194,7 +194,7 @@ def main():
 
     if not image_ref:
         short_sha = os.environ.get("GITHUB_SHA", "latest")[:7]
-        image_ref = f"ghcr.io/rajeshm20/studentappbackend:sha-{short_sha}"
+        image_ref = f"ghcr.io/rajeshm20/openedcore:sha-{short_sha}"
 
     print(f"Initiating deployment for service {service_id}")
     print(f"Target Image: {image_ref}")

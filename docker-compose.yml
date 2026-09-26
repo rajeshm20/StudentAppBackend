@@ -61,7 +61,7 @@ services:
     command: ["migrate", "--yes"]
     restart: "no"
   revert:
-    image: studentappbackend:latest
+    image: openedcore:latest
     build:
       context: .
     environment:
