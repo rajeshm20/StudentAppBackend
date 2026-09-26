@@ -218,6 +218,15 @@ private func configureEmail(_ app: Application) {
 }
 
 private func configureMigrations(_ app: Application) throws {
+    // Reconcile legacy migration history if project was renamed from StudentAppBackend to OpenEdCore
+    if let sql = app.db as? any SQLDatabase {
+        _ = try? sql.raw("""
+            UPDATE _fluent_migrations 
+            SET name = REPLACE(name, 'StudentAppBackend.', 'OpenEdCore.') 
+            WHERE name LIKE 'StudentAppBackend.%';
+        """).run().wait()
+    }
+
     app.migrations.add(CreateStudent())
     app.migrations.add(CreateRevokedToken())
     app.migrations.add(CreatePasswordResetToken())
