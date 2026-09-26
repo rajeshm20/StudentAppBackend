@@ -39,6 +39,7 @@ def make_request(url, api_key, method="GET", data=None):
             return json.loads(body) if body else {}
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8")
+        e.read_body = err_body
         print(f"HTTP Error {e.code} for {method} {url}: {err_body}", file=sys.stderr)
         raise
     except urllib.error.URLError as e:
@@ -58,6 +59,34 @@ def get_latest_deploys(service_id, api_key, limit=2):
         return []
 
 
+def update_service_image(service_id, api_key, image_url):
+    """Attempts to update the service's base image repository on Render via PATCH /services/{serviceId}."""
+    url = f"{RENDER_API_BASE}/services/{service_id}"
+    service_info = {}
+    try:
+        service_info = make_request(url, api_key, method="GET")
+    except Exception as e:
+        print(f"Warning: Could not fetch service details for update: {e}", file=sys.stderr)
+
+    owner_id = service_info.get("ownerId") or service_info.get("service", {}).get("ownerId")
+    reg_cred_id = None
+    service_image = service_info.get("image") or service_info.get("serviceDetails", {}).get("image", {})
+    if isinstance(service_image, dict):
+        reg_cred_id = service_image.get("registryCredentialId")
+
+    payload = {
+        "image": {
+            "imagePath": image_url
+        }
+    }
+    if owner_id:
+        payload["image"]["ownerId"] = owner_id
+    if reg_cred_id:
+        payload["image"]["registryCredentialId"] = reg_cred_id
+
+    print(f"Updating Render service {service_id} base image to '{image_url}' via PATCH...")
+    return make_request(url, api_key, method="PATCH", data=payload)
+
 
 def trigger_deploy(service_id, api_key, image_url):
     url = f"{RENDER_API_BASE}/services/{service_id}/deploys"
@@ -66,7 +95,37 @@ def trigger_deploy(service_id, api_key, image_url):
         "clearCache": "do_not_clear"
     }
     print(f"Triggering Render deploy on service {service_id} with image: {image_url}...")
-    resp = make_request(url, api_key, method="POST", data=payload)
+    try:
+        resp = make_request(url, api_key, method="POST", data=payload)
+    except urllib.error.HTTPError as e:
+        err_body = getattr(e, "read_body", "")
+        if "only the image tag or digest can be updated" in err_body:
+            print("\n" + "=" * 70, file=sys.stderr)
+            print("RENDER BASE IMAGE REPOSITORY MISMATCH DETECTED:", file=sys.stderr)
+            print(f"Render rejected deploying '{image_url}' because the service's base image repository", file=sys.stderr)
+            print("is currently registered under the old project name (studentappbackend).", file=sys.stderr)
+            print("Attempting automatic service reconfiguration via PATCH /v1/services/{service_id}...", file=sys.stderr)
+            print("=" * 70 + "\n", file=sys.stderr)
+            try:
+                update_service_image(service_id, api_key, image_url)
+                print("Service image updated via API. Retrying deploy trigger...")
+                resp = make_request(url, api_key, method="POST", data=payload)
+            except Exception as patch_err:
+                print("\n" + "!" * 70, file=sys.stderr)
+                print("MANUAL ACTION REQUIRED IN RENDER DASHBOARD (ONE-TIME):", file=sys.stderr)
+                print(f"Automatic PATCH returned: {patch_err}", file=sys.stderr)
+                print("Because the Docker image name was renamed from 'studentappbackend' to 'openedcore',", file=sys.stderr)
+                print("Render requires updating the Image URL once in the Render Dashboard:", file=sys.stderr)
+                print(f"  1. Navigate to: https://dashboard.render.com -> Select your Web Service", file=sys.stderr)
+                print("  2. Go to 'Settings' -> 'Image URL' (or 'Build & Deploy')", file=sys.stderr)
+                print(f"  3. Change the Image URL to: {image_url}", file=sys.stderr)
+                print("  4. Click 'Save Changes' and click 'Manual Deploy' -> 'Deploy latest commit'", file=sys.stderr)
+                print("Once updated in the dashboard, all future automated CI/CD deploys will succeed automatically.", file=sys.stderr)
+                print("!" * 70 + "\n", file=sys.stderr)
+                raise
+        else:
+            raise
+
     deploy_id = resp.get("id") or resp.get("deploy", {}).get("id")
     if not deploy_id:
         print(f"Error: Response did not contain a deploy ID: {resp}", file=sys.stderr)
