@@ -1,6 +1,6 @@
 services:
   migrate:
-    image: ghcr.io/rajeshm20/studentappbackend:latest
+    image: ghcr.io/rajeshm20/openedcore:latest
     restart: "no"
     environment:
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -18,7 +18,7 @@ services:
     command: ["migrate", "--yes"]
 
   app:
-    image: ghcr.io/rajeshm20/studentappbackend:latest
+    image: ghcr.io/rajeshm20/openedcore:latest
     restart: unless-stopped
     environment:
       LOG_LEVEL: ${LOG_LEVEL:-info}

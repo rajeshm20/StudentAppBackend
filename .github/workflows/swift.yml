@@ -12,7 +12,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/studentappbackend
+  IMAGE_NAME: ${{ github.repository_owner }}/openedcore
 
 jobs:
   test:
@@ -67,13 +67,15 @@ jobs:
           echo "::add-mask::$JWT"
           echo "JWT_SECRET=$JWT" >> $GITHUB_ENV
 
-      - name: Cache Swift build
+      - name: Cache Swift dependencies
         uses: actions/cache@v4
         with:
-          path: .build
-          key: swift-build-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          path: |
+            .build/repositories
+            .build/checkouts
+          key: openedcore-spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
           restore-keys: |
-            swift-build-${{ runner.os }}-
+            openedcore-spm-${{ runner.os }}-
 
       - name: Build
         run: swift build -v

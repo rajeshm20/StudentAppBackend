@@ -1,17 +1,17 @@
 <div align="center">
 
-![StudentAppBackend Vapor Swift Server Banner](./docs/images/vapor-swift-banner.png)
+![OpenEdCore Vapor Swift Server Banner](./docs/images/vapor-swift-banner.png)
 
-# StudentAppBackend
+# OpenEdCore
 
 **High-performance, production-ready Vapor 4 / Swift 6 backend providing dual REST and GraphQL APIs for student identity and academic lifecycle management.**
 
 <p align="center">
-  <a href="https://github.com/rajeshm20/StudentAppBackend/actions/workflows/swift.yml"><img src="https://github.com/rajeshm20/StudentAppBackend/actions/workflows/swift.yml/badge.svg" alt="CI/CD" /></a>
+  <a href="https://github.com/rajeshm20/OpenEdCore/actions/workflows/swift.yml"><img src="https://github.com/rajeshm20/OpenEdCore/actions/workflows/swift.yml/badge.svg" alt="CI/CD" /></a>
   <a href="https://swift.org"><img src="https://img.shields.io/badge/Swift-6.0-F05138.svg?logo=swift&logoColor=white" alt="Swift Version" /></a>
   <a href="https://vapor.codes"><img src="https://img.shields.io/badge/Vapor-4.115-blue.svg?logo=vapor&logoColor=white" alt="Vapor Framework" /></a>
   <a href="https://www.postgresql.org"><img src="https://img.shields.io/badge/PostgreSQL-16-336791.svg?logo=postgresql&logoColor=white" alt="Database" /></a>
-  <a href="https://github.com/rajeshm20/StudentAppBackend/pkgs/container/studentappbackend"><img src="https://img.shields.io/badge/GHCR-v2.0.0-blue?logo=docker&logoColor=white" alt="Docker Image" /></a>
+  <a href="https://github.com/rajeshm20/OpenEdCore/pkgs/container/openedcore"><img src="https://img.shields.io/badge/GHCR-v2.0.0-blue?logo=docker&logoColor=white" alt="Docker Image" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT" /></a>
 </p>
 
@@ -45,7 +45,7 @@
 
 ## Overview
 
-StudentAppBackend is an enterprise-grade backend service engineered in Swift 6 and Vapor 4 to power school and student identity applications across mobile (iOS) and web clients. It exposes unified REST and GraphQL APIs backed by PostgreSQL 16 via the Fluent ORM, providing identity registration, secure authentication, password recovery, and role-based access control (RBAC). Built with production resiliency in mind, the service enforces strict TLS 1.2+ security controls, fail-loudly environment validations, containerized CI/CD gating, and automated database migration pipelines.
+OpenEdCore is an enterprise-grade backend service engineered in Swift 6 and Vapor 4 to power school and student identity applications across mobile (iOS) and web clients. It exposes unified REST and GraphQL APIs backed by PostgreSQL 16 via the Fluent ORM, providing identity registration, secure authentication, password recovery, and role-based access control (RBAC). Built with production resiliency in mind, the service enforces strict TLS 1.2+ security controls, fail-loudly environment validations, containerized CI/CD gating, and automated database migration pipelines.
 
 ---
 
@@ -224,8 +224,8 @@ Ensure the following tools are installed on your host machine before beginning l
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/rajeshm20/StudentAppBackend.git
-cd StudentAppBackend
+git clone https://github.com/rajeshm20/OpenEdCore.git
+cd OpenEdCore
 ```
 
 ### 2. Configure Environment Variables
@@ -257,7 +257,7 @@ docker compose ps
 Run Fluent migrations against your local PostgreSQL database:
 
 ```bash
-swift run StudentAppBackend migrate --yes
+swift run OpenEdCore migrate --yes
 ```
 
 > **Note:** When `AUTO_MIGRATE=true` is set in your `.env`, migrations will execute automatically on startup during local development.
@@ -268,7 +268,7 @@ Compile and boot the server locally:
 
 ```bash
 swift build
-swift run StudentAppBackend serve --hostname 0.0.0.0 --port 8080
+swift run OpenEdCore serve --hostname 0.0.0.0 --port 8080
 ```
 
 Once running, verify the service status:
@@ -544,14 +544,14 @@ The project includes an optimized multi-stage `Dockerfile` based on `swift:6.0-n
 
 ```bash
 # Build local container
-docker build -t studentappbackend:latest .
+docker build -t openedcore:latest .
 
 # Run standalone container
 docker run -d \
   -p 8080:8080 \
   --env-file .env \
-  --name studentapp-api \
-  studentappbackend:latest
+  --name openedcore-api \
+  openedcore:latest
 ```
 
 ### GitHub Container Registry (GHCR)
@@ -559,8 +559,8 @@ docker run -d \
 Published container images are automatically built, scanned, and pushed to GHCR on tagged releases and pushes to `main`:
 
 ```bash
-docker pull ghcr.io/rajeshm20/studentappbackend:latest
-docker pull ghcr.io/rajeshm20/studentappbackend:v2.0.0
+docker pull ghcr.io/rajeshm20/openedcore:latest
+docker pull ghcr.io/rajeshm20/openedcore:v2.0.0
 ```
 
 ### Building a Standalone Linux Binary
@@ -577,12 +577,12 @@ sudo apt-get update && sudo apt-get install -y libjemalloc-dev
 
 # 2. Compile optimized release binary with statically linked Swift standard library
 swift build -c release \
-  --product StudentAppBackend \
+  --product OpenEdCore \
   --static-swift-stdlib \
   -Xlinker -ljemalloc
 
 # 3. Binary artifact location:
-# .build/release/StudentAppBackend
+# .build/release/OpenEdCore
 ```
 
 #### Option B: Build a Linux Binary from macOS (via Docker)
@@ -595,12 +595,12 @@ docker run --rm \
   -v "$PWD":/workspace \
   -w /workspace \
   swift:6.0-noble \
-  swift build -c release --product StudentAppBackend --static-swift-stdlib
+  swift build -c release --product OpenEdCore --static-swift-stdlib
 
 # 2. Alternatively, extract the optimized binary directly from the Docker build stage:
-docker build --target build -t studentapp-builder .
-docker run --rm studentapp-builder cat /staging/StudentAppBackend > ./StudentAppBackend-linux
-chmod +x ./StudentAppBackend-linux
+docker build --target build -t openedcore-builder .
+docker run --rm openedcore-builder cat /staging/OpenEdCore > ./OpenEdCore-linux
+chmod +x ./OpenEdCore-linux
 ```
 
 > [!TIP]
@@ -620,7 +620,7 @@ Production cutover and rollback procedures from MySQL to PostgreSQL 16 are locat
 ## Project Structure
 
 ```text
-StudentAppBackend/
+OpenEdCore/
 ├── .github/
 │   └── workflows/
 │       └── swift.yml               # GitHub Actions CI/CD (Test gating & GHCR publish)
@@ -633,7 +633,7 @@ StudentAppBackend/
 │   ├── migration/                  # PostgreSQL migration runbook & verification tools
 │   └── renew-dev-certs.sh          # Self-signed dev certificate auto-renewal utility
 ├── Sources/
-│   └── StudentAppBackend/
+│   └── OpenEdCore/
 │       ├── entrypoint.swift        # Application entrypoint & .env bootstrap
 │       ├── Configure/              # UnifiedErrorMiddleware, database, JWT, CORS, TLS
 │       ├── Controllers/            # Thin REST controllers (Auth, Student, Health)
@@ -646,7 +646,7 @@ StudentAppBackend/
 │       └── Services/               # Domain logic (TokenService, StudentService, SendGrid)
 ├── Specs/                          # Architectural and security specifications
 └── Tests/
-    └── StudentAppBackendTests/     # Comprehensive 125-test integration & unit suite
+    └── OpenEdCoreTests/            # Comprehensive 146-test integration & unit suite
 ```
 
 ---
@@ -660,7 +660,7 @@ Contributions are welcomed. Please follow these conventions:
    - `fix/short-description`
    - `chore/short-description`
 2. **Coding Standards**: Adhere to Swift 6 strict concurrency patterns. Business logic must reside in `Services/` rather than inline controller blocks.
-3. **Testing**: Every behavioral change must include corresponding tests in `Tests/StudentAppBackendTests/`. All tests must pass cleanly before opening a pull request.
+3. **Testing**: Every behavioral change must include corresponding tests in `Tests/OpenEdCoreTests/`. All tests must pass cleanly before opening a pull request.
 4. **Pull Requests**: Submit PRs against `main`. Provide a concise summary of changes and reference any associated issue numbers.
 
 For detailed guidelines, please review [`CONTRIBUTING.md`](CONTRIBUTING.md).
@@ -672,7 +672,7 @@ For detailed guidelines, please review [`CONTRIBUTING.md`](CONTRIBUTING.md).
 This project is licensed under the terms of the [MIT License](LICENSE).
 
 - **Project Maintainer**: Rajesh Mani ([@rajeshm20](https://github.com/rajeshm20))
-- **Repository**: [rajeshm20/StudentAppBackend](https://github.com/rajeshm20/StudentAppBackend)
+- **Repository**: [rajeshm20/OpenEdCore](https://github.com/rajeshm20/OpenEdCore)
 
 > **Image Asset Note**: If visual UI screenshots or architecture mockups are added in the future, please place them in `./docs/images/` and link them using standard Markdown syntax.
 

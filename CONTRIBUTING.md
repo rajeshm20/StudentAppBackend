@@ -1,6 +1,6 @@
-# Contributing to StudentAppBackend
+# Contributing to OpenEdCore
 
-Thanks for your interest in contributing to StudentAppBackend — a Vapor-based Swift backend exposing student authentication and student data APIs over REST and GraphQL. This document covers how to set up the project, the expected workflow, and coding conventions.
+Thanks for your interest in contributing to OpenEdCore — a Vapor-based Swift backend exposing student authentication and student data APIs over REST and GraphQL. This document covers how to set up the project, the expected workflow, and coding conventions.
 
 ## Table of Contents
 
@@ -26,15 +26,15 @@ Be respectful and constructive. Assume good intent, keep discussion focused on t
 
 - macOS 13 or later
 - Swift 6 toolchain / Xcode compatible with the package
-- MySQL 8 (if running outside Docker)
+- PostgreSQL 16 (or MySQL 8 if testing legacy)
 - Docker and Docker Compose (for container-based setup)
 
 ### Fork and Clone
 
 ```bash
-git clone https://github.com/<your-username>/StudentAppBackend.git
-cd StudentAppBackend
-git remote add upstream https://github.com/rajeshm20/StudentAppBackend.git
+git clone https://github.com/<your-username>/OpenEdCore.git
+cd OpenEdCore
+git remote add upstream https://github.com/rajeshm20/OpenEdCore.git
 ```
 
 ### Build and Run
@@ -52,13 +52,13 @@ For local source-based development:
 docker compose up -d
 ```
 
-For the packaged backend + MySQL setup:
+For the packaged backend + PostgreSQL setup:
 
 ```bash
 docker compose -f docker-compose.package.yml up -d
 ```
 
-If MySQL was previously started with older credentials, recreate the volume:
+If the database was previously started with older credentials, recreate the volume:
 
 ```bash
 docker compose -f docker-compose.package.yml down -v
@@ -72,7 +72,7 @@ docker compose -f docker-compose.package.yml up -d
    git checkout -b feature/short-description
    ```
 2. Make your changes, following the [Coding Guidelines](#coding-guidelines) below.
-3. Add or update tests in `Tests/StudentAppBackendTests` for any behavior change.
+3. Add or update tests in `Tests/OpenEdCoreTests` for any behavior change.
 4. Run the full test suite locally before opening a PR.
 5. Update the `README.md` if you change setup steps, endpoints, or environment variables.
 6. Push your branch and open a pull request against `main`.
@@ -81,8 +81,8 @@ Please keep pull requests focused on a single change — smaller PRs are easier 
 
 ## Project Structure
 
-- `Sources/StudentAppBackend` — application source (routes, controllers, GraphQL, services, models, migrations, middleware)
-- `Tests/StudentAppBackendTests` — test suite
+- `Sources/OpenEdCore` — application source (routes, controllers, GraphQL, services, models, migrations, middleware)
+- `Tests/OpenEdCoreTests` — test suite
 - `docker-compose.yml` — local source-based development
 - `docker-compose.package.yml` — packaged backend + MySQL
 - `docker-compose.caddy.yml` — backend behind Caddy with HTTPS termination
